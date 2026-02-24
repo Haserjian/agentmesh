@@ -24,7 +24,7 @@ into cryptographic proof that intent, diff, and episode lineage are consistent.
     "public_key": "<base64url raw 32-byte Ed25519 pubkey>"
   },
   "tool_versions": {
-    "agentmesh": "0.5.2"
+    "agentmesh": "0.6.0"
   }
 }
 ```
