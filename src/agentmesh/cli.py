@@ -324,3 +324,44 @@ def bundle_get(
         console.print(f"  Branch: {git.get('branch', '')}  SHA: {git.get('sha', '')}")
         mesh = bundle.get("mesh", {})
         console.print(f"  Claims: {len(mesh.get('open_claims', []))}  Agents: {len(mesh.get('active_agents', []))}")
+
+
+# -- Hooks commands --
+
+hooks_app = typer.Typer(help="Claude Code hook management.")
+app.add_typer(hooks_app, name="hooks")
+
+
+@hooks_app.command(name="install")
+def hooks_install() -> None:
+    """Install Claude Code hooks for collision detection."""
+    from .hooks.install import install_hooks
+    actions = install_hooks()
+    for a in actions:
+        console.print(f"  {a}")
+    console.print("[green]Hooks installed[/green]")
+
+
+@hooks_app.command(name="uninstall")
+def hooks_uninstall() -> None:
+    """Remove AgentMesh hooks from Claude Code."""
+    from .hooks.install import uninstall_hooks
+    actions = uninstall_hooks()
+    for a in actions:
+        console.print(f"  {a}")
+    console.print("[yellow]Hooks uninstalled[/yellow]")
+
+
+@hooks_app.command(name="status")
+def hooks_status_cmd() -> None:
+    """Check hook installation status."""
+    from .hooks.install import hooks_status
+    s = hooks_status()
+    if s["installed"]:
+        console.print("[green]Hooks installed and configured[/green]")
+    else:
+        if not s["scripts_present"]:
+            console.print("[red]Hook scripts missing[/red]")
+        if not s["settings_configured"]:
+            console.print("[red]Settings not configured[/red]")
+        console.print("Run [bold]agentmesh hooks install[/bold] to fix")
