@@ -20,6 +20,10 @@ def register_wait(
     data_dir: Path | None = None,
 ) -> Waiter:
     """Register a wait on a resource. Triggers priority inheritance on the holder."""
+    if resource_type == ResourceType.FILE:
+        from .claims import normalize_path
+        resource = normalize_path(resource)
+
     episode_id = get_current_episode(data_dir)
     waiter_id = f"wait_{uuid.uuid4().hex[:12]}"
 
@@ -81,7 +85,9 @@ def steal_resource(
 
     Returns (success, message).
     """
-    from .claims import parse_resource_string
+    if resource_type == ResourceType.FILE:
+        from .claims import normalize_path
+        resource = normalize_path(resource)
 
     episode_id = get_current_episode(data_dir)
     now_str = _now()

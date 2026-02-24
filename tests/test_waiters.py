@@ -99,3 +99,39 @@ def test_steal_no_claim(tmp_data_dir: Path) -> None:
     )
     assert not ok
     assert "no active claim" in msg
+
+
+def test_register_wait_normalizes_file_paths(tmp_data_dir: Path, tmp_path: Path, monkeypatch) -> None:
+    """Relative file waits should still match holder claims via normalization."""
+    _register("a1", tmp_data_dir)
+    _register("a2", tmp_data_dir)
+    target = tmp_path / "main.py"
+    target.write_text("print('x')\n")
+
+    make_claim("a1", str(target), priority=4, data_dir=tmp_data_dir)
+    monkeypatch.chdir(tmp_path)
+    register_wait(
+        "a2", "main.py", priority=9, reason="hotfix",
+        resource_type=ResourceType.FILE, data_dir=tmp_data_dir,
+    )
+
+    active = db.list_claims(tmp_data_dir, agent_id="a1", active_only=True)
+    assert len(active) == 1
+    assert active[0].effective_priority == 9
+
+
+def test_steal_normalizes_file_paths(tmp_data_dir: Path, tmp_path: Path, monkeypatch) -> None:
+    """Relative file steals should resolve to the normalized claimed path."""
+    _register("a1", tmp_data_dir)
+    _register("a2", tmp_data_dir)
+    target = tmp_path / "orphan.py"
+    target.write_text("x=1\n")
+
+    make_claim("a1", str(target), ttl_s=0, data_dir=tmp_data_dir)
+    monkeypatch.chdir(tmp_path)
+    ok, msg = steal_resource(
+        "a2", "orphan.py", reason="takeover",
+        resource_type=ResourceType.FILE, data_dir=tmp_data_dir,
+    )
+    assert ok
+    assert "ttl_expired" in msg

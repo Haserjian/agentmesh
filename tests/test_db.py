@@ -80,6 +80,103 @@ def _create_legacy_db(data_dir: Path, with_claims_index: bool) -> None:
         conn.close()
 
 
+def _create_intermediate_db_with_episode_priority(data_dir: Path) -> None:
+    """Create schema with resource_type but without CHECK, plus episode/priority fields."""
+    db_path = data_dir / "board.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE agents (
+                agent_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL DEFAULT 'claude_code',
+                display_name TEXT NOT NULL DEFAULT '',
+                cwd TEXT NOT NULL DEFAULT '',
+                pid INTEGER,
+                tty TEXT,
+                status TEXT NOT NULL DEFAULT 'idle',
+                registered_at TEXT NOT NULL,
+                last_heartbeat TEXT NOT NULL,
+                meta TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE claims (
+                claim_id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+                path TEXT NOT NULL,
+                resource_type TEXT NOT NULL DEFAULT 'file',
+                intent TEXT NOT NULL DEFAULT 'edit',
+                state TEXT NOT NULL DEFAULT 'active',
+                ttl_s INTEGER NOT NULL DEFAULT 1800,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                released_at TEXT,
+                reason TEXT NOT NULL DEFAULT '',
+                episode_id TEXT NOT NULL DEFAULT '',
+                priority INTEGER NOT NULL DEFAULT 5,
+                effective_priority INTEGER NOT NULL DEFAULT 5
+            );
+            CREATE INDEX idx_claims_active_path ON claims(path) WHERE state = 'active';
+            CREATE TABLE messages (
+                msg_id TEXT PRIMARY KEY,
+                from_agent TEXT NOT NULL,
+                to_agent TEXT,
+                channel TEXT NOT NULL DEFAULT 'general',
+                severity TEXT NOT NULL DEFAULT 'FYI',
+                body TEXT NOT NULL DEFAULT '',
+                read_by TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE capsules (
+                capsule_id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                task_desc TEXT NOT NULL DEFAULT '',
+                git_branch TEXT NOT NULL DEFAULT '',
+                git_sha TEXT NOT NULL DEFAULT '',
+                diff_stat TEXT NOT NULL DEFAULT '',
+                files_changed TEXT NOT NULL DEFAULT '[]',
+                test_status TEXT NOT NULL DEFAULT 'unknown',
+                test_summary TEXT NOT NULL DEFAULT '',
+                what_changed TEXT NOT NULL DEFAULT '',
+                what_remains TEXT NOT NULL DEFAULT '',
+                risks TEXT NOT NULL DEFAULT '[]',
+                next_actions TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO agents "
+            "(agent_id, kind, display_name, cwd, pid, tty, status, registered_at, last_heartbeat, meta) "
+            "VALUES (?, 'claude_code', '', '/tmp', NULL, NULL, 'idle', ?, ?, '{}')",
+            ("a1", _now(), _now()),
+        )
+        conn.execute(
+            "INSERT INTO claims "
+            "(claim_id, agent_id, path, resource_type, intent, state, ttl_s, "
+            "created_at, expires_at, released_at, reason, episode_id, priority, effective_priority) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "clm_preserve",
+                "a1",
+                "/tmp/preserved.py",
+                "file",
+                "edit",
+                "active",
+                1800,
+                _now(),
+                _now(),
+                None,
+                "preserve-me",
+                "ep_preserve",
+                9,
+                10,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_init_db_creates_tables(tmp_data_dir: Path) -> None:
     conn = db.get_connection(tmp_data_dir)
     tables = conn.execute(
@@ -242,3 +339,20 @@ def test_migrated_claims_enforce_resource_type_check(tmp_path: Path) -> None:
             )
     finally:
         conn.close()
+
+
+def test_migrate_claims_preserves_episode_and_priority_fields(tmp_path: Path) -> None:
+    """Rebuild migration should not drop episode/priority data from intermediate schemas."""
+    data_dir = tmp_path / "legacy_intermediate"
+    data_dir.mkdir()
+    _create_intermediate_db_with_episode_priority(data_dir)
+
+    db.init_db(data_dir)
+
+    claims = db.list_claims(data_dir, active_only=False)
+    assert len(claims) == 1
+    clm = claims[0]
+    assert clm.claim_id == "clm_preserve"
+    assert clm.episode_id == "ep_preserve"
+    assert clm.priority == 9
+    assert clm.effective_priority == 10

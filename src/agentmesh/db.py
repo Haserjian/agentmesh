@@ -194,6 +194,9 @@ def migrate_claims_add_resource_type(data_dir: Path | None = None) -> None:
 
         cols = [r[1] for r in conn.execute("PRAGMA table_info(claims)").fetchall()]
         has_resource_type = "resource_type" in cols
+        has_episode_id = "episode_id" in cols
+        has_priority = "priority" in cols
+        has_effective_priority = "effective_priority" in cols
 
         ddl_row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'claims'"
@@ -225,6 +228,13 @@ def migrate_claims_add_resource_type(data_dir: Path | None = None) -> None:
             "CASE WHEN state IN ('active','released','expired') "
             "THEN state ELSE 'active' END"
         )
+        episode_expr = "coalesce(episode_id, '')" if has_episode_id else "''"
+        priority_expr = "coalesce(priority, 5)" if has_priority else "5"
+        effective_priority_expr = (
+            "coalesce(effective_priority, coalesce(priority, 5))"
+            if has_effective_priority
+            else (priority_expr if has_priority else "5")
+        )
 
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
@@ -242,16 +252,21 @@ def migrate_claims_add_resource_type(data_dir: Path | None = None) -> None:
             "created_at TEXT NOT NULL,"
             "expires_at TEXT NOT NULL,"
             "released_at TEXT,"
-            "reason TEXT NOT NULL DEFAULT ''"
+            "reason TEXT NOT NULL DEFAULT '',"
+            "episode_id TEXT NOT NULL DEFAULT '',"
+            "priority INTEGER NOT NULL DEFAULT 5,"
+            "effective_priority INTEGER NOT NULL DEFAULT 5"
             ")"
         )
         conn.execute(
             "INSERT INTO claims_new "
             "(claim_id, agent_id, path, resource_type, intent, state, ttl_s, "
-            "created_at, expires_at, released_at, reason) "
+            "created_at, expires_at, released_at, reason, "
+            "episode_id, priority, effective_priority) "
             "SELECT claim_id, agent_id, path, "
             f"{resource_expr}, {intent_expr}, {state_expr}, "
-            "ttl_s, created_at, expires_at, released_at, reason "
+            "ttl_s, created_at, expires_at, released_at, reason, "
+            f"{episode_expr}, {priority_expr}, {effective_priority_expr} "
             "FROM claims"
         )
         conn.execute("DROP TABLE claims")
@@ -836,6 +851,26 @@ def _row_to_capsule_from_dict(d: dict) -> Capsule:
         sbar=json.loads(d["sbar"]) if isinstance(d.get("sbar"), str) else d.get("sbar", {}),
         created_at=d.get("created_at", ""),
         episode_id=d.get("episode_id", ""),
+    )
+
+
+def _row_to_claim_from_dict(d: dict) -> Claim:
+    """Build Claim from a plain dict (e.g. JSONL import)."""
+    return Claim(
+        claim_id=d["claim_id"],
+        agent_id=d["agent_id"],
+        path=d["path"],
+        resource_type=d.get("resource_type", "file"),
+        intent=d.get("intent", "edit"),
+        state=d.get("state", "active"),
+        ttl_s=d.get("ttl_s", 1800),
+        created_at=d.get("created_at", ""),
+        expires_at=d.get("expires_at", ""),
+        released_at=d.get("released_at"),
+        reason=d.get("reason", ""),
+        episode_id=d.get("episode_id", ""),
+        priority=d.get("priority", 5),
+        effective_priority=d.get("effective_priority", d.get("priority", 5)),
     )
 
 

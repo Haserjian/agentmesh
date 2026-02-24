@@ -7,6 +7,7 @@ from pathlib import Path
 
 from agentmesh import db
 from agentmesh.episodes import start_episode, end_episode
+from agentmesh.claims import make_claim
 from agentmesh.models import Agent
 from agentmesh.messages import post
 from agentmesh.weaver import append_weave
@@ -21,6 +22,8 @@ def _setup_episode(data_dir: Path) -> str:
     """Create an episode with some data, end it, return episode_id."""
     _register("a1", data_dir)
     ep_id = start_episode(title="Test Episode", data_dir=data_dir)
+    ok, _, _ = make_claim("a1", "/tmp/episode_claim.py", data_dir=data_dir)
+    assert ok
     post("a1", "hello from episode", data_dir=data_dir)
     append_weave(capsule_id="cap_test", git_commit_sha="abc123", data_dir=data_dir)
     end_episode(data_dir)
@@ -56,6 +59,7 @@ def test_verify_valid(tmp_data_dir: Path, tmp_path: Path) -> None:
     valid, manifest = verify_meshpack(out)
     assert valid
     assert manifest["episode_id"] == ep_id
+    assert manifest["counts"]["claims"] == 1
     assert manifest["counts"]["messages"] == 1
     assert manifest["counts"]["weave_events"] == 1
 
@@ -97,6 +101,7 @@ def test_cross_db_import(tmp_data_dir: Path, tmp_path: Path) -> None:
 
     counts = import_meshpack(out, namespace="imported", data_dir=new_data_dir)
     assert counts["episodes"] == 1
+    assert counts["claims"] == 1
     assert counts["messages"] == 1
     assert counts["weave_events"] == 1
 
@@ -104,3 +109,7 @@ def test_cross_db_import(tmp_data_dir: Path, tmp_path: Path) -> None:
     imported_ep = db.get_episode(f"imported/{ep_id}", new_data_dir)
     assert imported_ep is not None
     assert imported_ep.title == "Test Episode"
+
+    imported_claims = db.list_claims(new_data_dir, active_only=False)
+    assert len(imported_claims) == 1
+    assert imported_claims[0].episode_id == f"imported/{ep_id}"

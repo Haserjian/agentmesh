@@ -180,6 +180,29 @@ def import_meshpack(
             db.save_capsule(capsule, data_dir)
             counts["capsules"] += 1
 
+        # Import claims snapshot
+        raw = tf.extractfile("claims_snapshot.jsonl").read().decode()  # type: ignore
+        claims_rows = []
+        for line in raw.strip().splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            row["episode_id"] = episode_id
+            claims_rows.append(row)
+
+        # Claims reference agents via FK; seed placeholders if needed.
+        from .models import Agent
+
+        for row in claims_rows:
+            claim_agent_id = row.get("agent_id", "")
+            if claim_agent_id and db.get_agent(claim_agent_id, data_dir) is None:
+                db.register_agent(Agent(agent_id=claim_agent_id, cwd=""), data_dir)
+
+        for row in claims_rows:
+            claim = db._row_to_claim_from_dict(row)
+            db.create_claim(claim, data_dir)
+            counts["claims"] += 1
+
         # Import messages
         raw = tf.extractfile("messages.jsonl").read().decode()  # type: ignore
         for line in raw.strip().splitlines():
