@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -141,3 +142,57 @@ def test_task_finish_commits_and_closes_task(
     ).stdout
     assert "AgentMesh-Episode:" in log
     assert ep_id in log
+
+
+def test_task_commands_use_policy_defaults(
+    tmp_path: Path,
+    tmp_data_dir: Path,
+    monkeypatch,
+) -> None:
+    """task start/finish should apply defaults from .agentmesh/policy.json."""
+    repo = _init_repo(tmp_path / "repo")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "task_agent")
+
+    policy_dir = repo / ".agentmesh"
+    policy_dir.mkdir(parents=True, exist_ok=True)
+    policy = {
+        "schema_version": "1.0",
+        "claims": {"ttl_seconds": 123},
+        "task_finish": {
+            "run_tests": "python -c \"open('policy_ran.txt','w').write('ok')\"",
+            "capsule": False,
+            "release_all": False,
+            "end_episode": False,
+        },
+    }
+    (policy_dir / "policy.json").write_text(json.dumps(policy))
+
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    start = runner.invoke(
+        app,
+        ["task", "start", "--title", "Policy task", "--claim", "src/policy.py"],
+    )
+    assert start.exit_code == 0, start.output
+
+    active_claims = db.list_claims(tmp_data_dir, agent_id="task_agent")
+    assert len(active_claims) == 1
+    assert active_claims[0].ttl_s == 123
+
+    (repo / "src/policy.py").write_text("VALUE = 1\n")
+    subprocess.run(["git", "add", "src/policy.py"], cwd=str(repo), capture_output=True, check=True)
+
+    finish = runner.invoke(
+        app,
+        ["task", "finish", "--message", "policy defaults"],
+    )
+    assert finish.exit_code == 0, finish.output
+
+    # Policy run_tests command should have run.
+    assert (repo / "policy_ran.txt").exists()
+
+    # Policy says no capsule/release/end; all should be preserved.
+    assert db.list_capsules(tmp_data_dir) == []
+    assert len(db.list_claims(tmp_data_dir, agent_id="task_agent")) == 1
+    assert get_current_episode(tmp_data_dir) != ""

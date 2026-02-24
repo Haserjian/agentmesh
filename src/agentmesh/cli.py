@@ -6,7 +6,7 @@ import json
 import os
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from rich.console import Console
@@ -85,6 +85,41 @@ def _ensure_agent_exists(agent_id: str) -> None:
     )
 
 
+def _policy_path(cwd: Path | None = None) -> Path:
+    base = cwd or Path.cwd()
+    return base / ".agentmesh" / "policy.json"
+
+
+def _load_policy(cwd: Path | None = None) -> dict[str, Any]:
+    path = _policy_path(cwd)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _policy_get(policy: dict[str, Any], keys: list[str], default: Any) -> Any:
+    value: Any = policy
+    for key in keys:
+        if not isinstance(value, dict) or key not in value:
+            return default
+        value = value[key]
+    return value
+
+
+def _write_scaffold_file(path: Path, content: str, force: bool) -> str:
+    """Write scaffold file and return status: created/updated/skipped."""
+    existed = path.exists()
+    if existed and not force:
+        return "skipped"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    return "updated" if existed else "created"
+
+
 @app.callback()
 def main(
     data_dir: Optional[str] = typer.Option(None, "--data-dir", envvar="AGENTMESH_DATA_DIR",
@@ -97,6 +132,132 @@ def main(
     if version:
         console.print(f"agentmesh {__version__}")
         raise typer.Exit()
+
+
+@app.command(name="init")
+def init_cmd(
+    repo: str = typer.Option(".", "--repo", "-r", help="Target repository path"),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing scaffold files"),
+    install_hooks: bool = typer.Option(False, "--install-hooks", help="Install Claude Code hooks"),
+    write_policy: bool = typer.Option(True, "--policy/--no-policy", help="Write .agentmesh/policy.json"),
+    test_command: str = typer.Option("pytest -q", "--test-command", help="Default test command for task finish"),
+    claim_ttl: int = typer.Option(1800, "--claim-ttl", help="Default claim TTL in seconds"),
+    capsule_default: bool = typer.Option(True, "--capsule-default/--no-capsule-default",
+                                         help="Default capsule behavior for task finish"),
+) -> None:
+    """Initialize AgentMesh defaults in a repository."""
+    target = Path(repo).resolve()
+    if not target.exists() or not target.is_dir():
+        console.print(f"Not a directory: {target}", style="red")
+        raise typer.Exit(1)
+
+    policy = {
+        "schema_version": "1.0",
+        "claims": {
+            "ttl_seconds": claim_ttl,
+        },
+        "task_finish": {
+            "run_tests": test_command,
+            "capsule": capsule_default,
+            "release_all": True,
+            "end_episode": True,
+        },
+    }
+
+    capabilities = {
+        "schema_version": "1.0",
+        "tool_name": "agentmesh",
+        "tool_version": __version__,
+        "recommended_defaults": {
+            "commit_via_agentmesh": True,
+            "capsule_on_finish": capsule_default,
+            "end_episode_on_finish": True,
+            "release_claims_on_finish": True,
+            "claim_ttl_seconds": claim_ttl,
+            "test_command": test_command,
+        },
+        "happy_path": {
+            "start": "agentmesh task start --title <task_title> [--claim <resource> ...]",
+            "finish": "agentmesh task finish --message <msg> [--run-tests <cmd>]",
+        },
+        "commands": {
+            "init": "agentmesh init [--repo <path>] [--install-hooks] [--policy]",
+            "task.start": "agentmesh task start --title <title> [--claim <resource> ...]",
+            "task.finish": "agentmesh task finish --message <msg> [--run-tests <cmd>]",
+            "resource.claim": "agentmesh claim <resource ...>",
+            "resource.check": "agentmesh check <path>",
+            "mesh.status": "agentmesh status",
+            "git.commit": "agentmesh commit -m <msg> [--run-tests <cmd>] [--capsule]",
+            "weave.verify": "agentmesh weave verify",
+            "weave.export": "agentmesh weave export --md",
+            "episode.export": "agentmesh episode export <episode_id>",
+            "episode.import": "agentmesh episode import <meshpack_path>",
+        },
+        "resource_prefixes": [
+            "PORT:<number>",
+            "LOCK:<name>",
+            "TEST_SUITE:<name>",
+            "TEMP_DIR:<path>",
+            "<file_path>",
+        ],
+        "agent_guidance": [
+            "Prefer task.start/task.finish for basic workflows.",
+            "Claim resources before editing shared files.",
+            "Treat weave verify failures as blocking.",
+        ],
+    }
+
+    agents_md = f"""# AgentMesh Repo Playbook
+
+This repo uses AgentMesh as a local coordination + provenance layer around normal git workflows.
+
+## Happy Path
+
+```bash
+agentmesh task start --title "<task>" --claim <resource>
+# edit + stage as normal
+git add <files...>
+agentmesh task finish --message "<commit message>"
+```
+
+Default policy:
+- claim TTL: `{claim_ttl}` seconds
+- task finish test command: `{test_command}`
+- task finish capsule default: `{str(capsule_default).lower()}`
+
+## Useful Commands
+
+- `agentmesh status`
+- `agentmesh check <path>`
+- `agentmesh weave verify`
+- `agentmesh weave export --md`
+"""
+
+    files: list[tuple[Path, str]] = [
+        (target / "AGENTS.md", agents_md),
+        (
+            target / ".agentmesh" / "capabilities.json",
+            json.dumps(capabilities, indent=2) + "\n",
+        ),
+    ]
+    if write_policy:
+        files.append(
+            (
+                target / ".agentmesh" / "policy.json",
+                json.dumps(policy, indent=2) + "\n",
+            )
+        )
+
+    for path, content in files:
+        status_label = _write_scaffold_file(path, content, force=force)
+        console.print(f"{status_label:7} {path}")
+
+    if install_hooks:
+        from .hooks.install import install_hooks as install_hooks_fn
+        actions = install_hooks_fn()
+        for action in actions:
+            console.print(f"hook: {action}")
+        console.print("[green]Hooks installed[/green]")
 
 
 # -- Agent commands --
@@ -648,7 +809,7 @@ def task_start(
         "-c",
         help="Resource to claim (repeat for multiple resources)",
     ),
-    ttl: int = typer.Option(1800, "--ttl", help="Claim TTL in seconds"),
+    ttl: Optional[int] = typer.Option(None, "--ttl", help="Claim TTL in seconds (default from policy)"),
     reuse_current: bool = typer.Option(
         True,
         "--reuse-current/--new-episode",
@@ -659,6 +820,9 @@ def task_start(
     _ensure_db()
     agent_id = agent or _auto_agent_id()
     _ensure_agent_exists(agent_id)
+    policy = _load_policy(Path.cwd())
+    policy_ttl = _policy_get(policy, ["claims", "ttl_seconds"], 1800)
+    effective_ttl = ttl if ttl is not None else (policy_ttl if isinstance(policy_ttl, int) else 1800)
 
     ep_id = episodes.get_current_episode(_get_data_dir()) if reuse_current else ""
     created_new = False
@@ -686,14 +850,14 @@ def task_start(
             agent_id,
             resource,
             intent=ClaimIntent.EDIT,
-            ttl_s=ttl,
+            ttl_s=effective_ttl,
             reason=f"task:{title}",
             data_dir=_get_data_dir(),
         )
         if ok:
             rt_label = clm.resource_type.value.upper() if clm.resource_type.value != "file" else ""
             prefix = f"[{rt_label}] " if rt_label else ""
-            console.print(f"Claimed {prefix}[bold]{clm.path}[/bold] (ttl={ttl}s)")
+            console.print(f"Claimed {prefix}[bold]{clm.path}[/bold] (ttl={effective_ttl}s)")
         else:
             had_conflict = True
             console.print(f"CONFLICT on [bold]{resource}[/bold]:", style="red bold")
@@ -707,35 +871,55 @@ def task_finish(
     message: str = typer.Option(..., "--message", "-m", help="Commit message"),
     agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent ID"),
     run_tests: Optional[str] = typer.Option(None, "--run-tests", help="Test command to run before commit"),
-    capsule: bool = typer.Option(True, "--capsule/--no-capsule", help="Emit a context capsule with the commit"),
-    release_all: bool = typer.Option(
-        True,
+    capsule: Optional[bool] = typer.Option(None, "--capsule/--no-capsule",
+                                           help="Emit a context capsule with the commit (default from policy)"),
+    release_all: Optional[bool] = typer.Option(
+        None,
         "--release-all/--keep-claims",
-        help="Release all claims held by this agent after commit",
+        help="Release all claims held by this agent after commit (default from policy)",
     ),
-    end_episode: bool = typer.Option(
-        True,
+    end_episode: Optional[bool] = typer.Option(
+        None,
         "--end-episode/--keep-episode",
-        help="End the current episode after commit",
+        help="End the current episode after commit (default from policy)",
     ),
 ) -> None:
     """Finish a task: commit with provenance, optionally release claims and end episode."""
     _ensure_db()
     agent_id = agent or _auto_agent_id()
+    policy = _load_policy(Path.cwd())
+    policy_finish = _policy_get(policy, ["task_finish"], {})
+
+    effective_run_tests = run_tests
+    if effective_run_tests is None and isinstance(policy_finish, dict):
+        p_test = policy_finish.get("run_tests")
+        if isinstance(p_test, str) and p_test.strip():
+            effective_run_tests = p_test
+
+    def _bool_default(value: Optional[bool], key: str, fallback: bool) -> bool:
+        if value is not None:
+            return value
+        if isinstance(policy_finish, dict) and isinstance(policy_finish.get(key), bool):
+            return policy_finish[key]
+        return fallback
+
+    effective_capsule = _bool_default(capsule, "capsule", True)
+    effective_release_all = _bool_default(release_all, "release_all", True)
+    effective_end_episode = _bool_default(end_episode, "end_episode", True)
 
     commit_cmd(
         message=message,
         agent=agent_id,
         episode_trailer=True,
-        run_tests=run_tests,
-        capsule=capsule,
+        run_tests=effective_run_tests,
+        capsule=effective_capsule,
     )
 
-    if release_all:
+    if effective_release_all:
         released = claims.release(agent_id, release_all=True, data_dir=_get_data_dir())
         console.print(f"Released {released} claim(s)")
 
-    if end_episode:
+    if effective_end_episode:
         ep_id = episodes.end_episode(_get_data_dir())
         if ep_id:
             events.append_event(
