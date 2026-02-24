@@ -22,6 +22,14 @@ class AgentStatus(str, enum.Enum):
     GONE = "gone"
 
 
+class ResourceType(str, enum.Enum):
+    FILE = "file"
+    PORT = "port"
+    LOCK = "lock"
+    TEST_SUITE = "test_suite"
+    TEMP_DIR = "temp_dir"
+
+
 class ClaimIntent(str, enum.Enum):
     EDIT = "edit"
     READ = "read"
@@ -76,6 +84,7 @@ class Claim(BaseModel, frozen=True):
     claim_id: str
     agent_id: str
     path: str
+    resource_type: ResourceType = ResourceType.FILE
     intent: ClaimIntent = ClaimIntent.EDIT
     state: ClaimState = ClaimState.ACTIVE
     ttl_s: int = 1800

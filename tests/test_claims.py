@@ -1,4 +1,4 @@
-"""Tests for claim collision detection -- 12 scenarios."""
+"""Tests for claim collision detection -- 18 scenarios."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agentmesh import db
-from agentmesh.claims import make_claim, release, check, normalize_path
-from agentmesh.models import Agent, ClaimIntent, ClaimState
+from agentmesh.claims import make_claim, release, check, normalize_path, parse_resource_string
+from agentmesh.models import Agent, ClaimIntent, ClaimState, ResourceType
 
 
 def _register(agent_id: str, data_dir: Path) -> None:
@@ -139,3 +139,65 @@ def test_different_files_no_conflict(tmp_data_dir: Path) -> None:
     ok2, _, conflicts = make_claim("a2", "/tmp/bar.py", data_dir=tmp_data_dir)
     assert ok1 and ok2
     assert conflicts == []
+
+
+# -- Resource type tests --
+
+def test_port_claim(tmp_data_dir: Path) -> None:
+    """Claiming a port resource should succeed and parse correctly."""
+    _register("a1", tmp_data_dir)
+    ok, clm, conflicts = make_claim("a1", "PORT:3000", data_dir=tmp_data_dir)
+    assert ok
+    assert clm.resource_type == ResourceType.PORT
+    assert clm.path == "3000"
+    assert conflicts == []
+
+
+def test_port_collision(tmp_data_dir: Path) -> None:
+    """Two agents claiming same port = conflict."""
+    _register("a1", tmp_data_dir)
+    _register("a2", tmp_data_dir)
+    ok1, _, _ = make_claim("a1", "PORT:3000", data_dir=tmp_data_dir)
+    ok2, _, conflicts = make_claim("a2", "PORT:3000", data_dir=tmp_data_dir)
+    assert ok1
+    assert not ok2
+    assert len(conflicts) == 1
+
+
+def test_cross_type_no_conflict(tmp_data_dir: Path) -> None:
+    """PORT:3000 and FILE:/path/3000 should never conflict."""
+    _register("a1", tmp_data_dir)
+    _register("a2", tmp_data_dir)
+    ok1, _, _ = make_claim("a1", "PORT:3000", data_dir=tmp_data_dir)
+    ok2, _, conflicts = make_claim(
+        "a2", "/tmp/3000", resource_type=ResourceType.FILE, data_dir=tmp_data_dir,
+    )
+    assert ok1 and ok2
+    assert conflicts == []
+
+
+def test_lock_claim(tmp_data_dir: Path) -> None:
+    """Lock resources parse and claim correctly."""
+    _register("a1", tmp_data_dir)
+    ok, clm, _ = make_claim("a1", "LOCK:npm", data_dir=tmp_data_dir)
+    assert ok
+    assert clm.resource_type == ResourceType.LOCK
+    assert clm.path == "npm"
+
+
+def test_test_suite_claim(tmp_data_dir: Path) -> None:
+    """TEST_SUITE resources parse and claim correctly."""
+    _register("a1", tmp_data_dir)
+    ok, clm, _ = make_claim("a1", "TEST_SUITE:integration", data_dir=tmp_data_dir)
+    assert ok
+    assert clm.resource_type == ResourceType.TEST_SUITE
+    assert clm.path == "integration"
+
+
+def test_backward_compat_bare_path(tmp_data_dir: Path) -> None:
+    """Bare paths (no prefix) should still work as FILE claims."""
+    _register("a1", tmp_data_dir)
+    ok, clm, _ = make_claim("a1", "/tmp/foo.py", data_dir=tmp_data_dir)
+    assert ok
+    assert clm.resource_type == ResourceType.FILE
+    assert clm.path == normalize_path("/tmp/foo.py")

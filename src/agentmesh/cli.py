@@ -141,25 +141,27 @@ def heartbeat(
 
 @app.command()
 def claim(
-    paths: list[str] = typer.Argument(..., help="File paths to claim"),
+    resources: list[str] = typer.Argument(..., help="Resources to claim (paths, PORT:N, LOCK:name, TEST_SUITE:name, TEMP_DIR:path)"),
     agent: Optional[str] = typer.Option(None, "--agent", "-a"),
     ttl: int = typer.Option(1800, "--ttl", "-t", help="TTL in seconds"),
     intent: str = typer.Option("edit", "--intent", "-i"),
     reason: str = typer.Option("", "--reason", "-r"),
     force: bool = typer.Option(False, "--force", "-f", help="Override existing claims"),
 ) -> None:
-    """Claim file paths for editing."""
+    """Claim resources for editing. Supports file paths and typed resources (PORT:3000, LOCK:npm)."""
     _ensure_db()
     agent_id = agent or _auto_agent_id()
     claim_intent = ClaimIntent(intent)
     had_conflict = False
-    for p in paths:
+    for p in resources:
         ok, clm, conflicts = claims.make_claim(
             agent_id, p, intent=claim_intent, ttl_s=ttl,
             reason=reason, force=force, data_dir=_get_data_dir(),
         )
         if ok:
-            console.print(f"Claimed [bold]{clm.path}[/bold] (ttl={ttl}s)")
+            rt_label = clm.resource_type.value.upper() if clm.resource_type.value != "file" else ""
+            prefix = f"[{rt_label}] " if rt_label else ""
+            console.print(f"Claimed {prefix}[bold]{clm.path}[/bold] (ttl={ttl}s)")
             if conflicts:
                 console.print(f"  (forced over {len(conflicts)} existing claim(s))", style="yellow")
         else:

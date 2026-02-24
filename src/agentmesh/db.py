@@ -8,7 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .models import Agent, AgentStatus, Claim, ClaimIntent, ClaimState, Message, Severity, Capsule
+from .models import Agent, AgentStatus, Claim, ClaimIntent, ClaimState, Message, ResourceType, Severity, Capsule
 
 _DEFAULT_DIR = Path.home() / ".agentmesh"
 
@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS claims (
     claim_id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents(agent_id),
     path TEXT NOT NULL,
+    resource_type TEXT NOT NULL DEFAULT 'file'
+        CHECK(resource_type IN ('file','port','lock','test_suite','temp_dir')),
     intent TEXT NOT NULL DEFAULT 'edit'
         CHECK(intent IN ('edit','read','test','review')),
     state TEXT NOT NULL DEFAULT 'active'
@@ -46,7 +48,7 @@ CREATE TABLE IF NOT EXISTS claims (
 );
 
 CREATE INDEX IF NOT EXISTS idx_claims_active_path
-    ON claims(path) WHERE state = 'active';
+    ON claims(resource_type, path) WHERE state = 'active';
 
 CREATE TABLE IF NOT EXISTS messages (
     msg_id TEXT PRIMARY KEY,
@@ -101,6 +103,21 @@ def init_db(data_dir: Path | None = None) -> None:
     conn = get_connection(data_dir)
     try:
         conn.executescript(_SCHEMA)
+    finally:
+        conn.close()
+    migrate_claims_add_resource_type(data_dir)
+
+
+def migrate_claims_add_resource_type(data_dir: Path | None = None) -> None:
+    """Add resource_type column to existing claims table if missing."""
+    conn = get_connection(data_dir)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(claims)").fetchall()]
+        if "resource_type" not in cols:
+            conn.execute(
+                "ALTER TABLE claims ADD COLUMN resource_type TEXT NOT NULL DEFAULT 'file'"
+            )
+            conn.commit()
     finally:
         conn.close()
 
@@ -191,32 +208,35 @@ def create_claim(claim: Claim, data_dir: Path | None = None) -> None:
     try:
         conn.execute(
             "INSERT INTO claims "
-            "(claim_id, agent_id, path, intent, state, ttl_s, created_at, expires_at, released_at, reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (claim.claim_id, claim.agent_id, claim.path, claim.intent.value,
-             claim.state.value, claim.ttl_s, claim.created_at, claim.expires_at,
-             claim.released_at, claim.reason),
+            "(claim_id, agent_id, path, resource_type, intent, state, ttl_s, "
+            "created_at, expires_at, released_at, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (claim.claim_id, claim.agent_id, claim.path, claim.resource_type.value,
+             claim.intent.value, claim.state.value, claim.ttl_s, claim.created_at,
+             claim.expires_at, claim.released_at, claim.reason),
         )
         conn.commit()
     finally:
         conn.close()
 
 
-def check_collision(path: str, exclude_agent: str | None = None,
+def check_collision(path: str, resource_type: ResourceType = ResourceType.FILE,
+                    exclude_agent: str | None = None,
                     data_dir: Path | None = None) -> list[Claim]:
-    """Return active edit claims on path, optionally excluding an agent."""
+    """Return active edit claims on path+resource_type, optionally excluding an agent."""
     conn = get_connection(data_dir)
     try:
         if exclude_agent:
             rows = conn.execute(
-                "SELECT * FROM claims WHERE path = ? AND state = 'active' "
+                "SELECT * FROM claims WHERE path = ? AND resource_type = ? AND state = 'active' "
                 "AND intent = 'edit' AND agent_id != ?",
-                (path, exclude_agent),
+                (path, resource_type.value, exclude_agent),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM claims WHERE path = ? AND state = 'active' AND intent = 'edit'",
-                (path,),
+                "SELECT * FROM claims WHERE path = ? AND resource_type = ? "
+                "AND state = 'active' AND intent = 'edit'",
+                (path, resource_type.value),
             ).fetchall()
         return [_row_to_claim(r) for r in rows]
     finally:
@@ -236,13 +256,13 @@ def check_and_claim(claim: Claim, force: bool = False,
             "UPDATE claims SET state = 'expired' WHERE state = 'active' AND expires_at < ?",
             (now,),
         )
-        # Check for conflicts (only edit vs edit)
+        # Check for conflicts (only edit vs edit, same resource_type + path)
         conflicts = []
         if claim.intent == ClaimIntent.EDIT:
             rows = conn.execute(
-                "SELECT * FROM claims WHERE path = ? AND state = 'active' "
+                "SELECT * FROM claims WHERE path = ? AND resource_type = ? AND state = 'active' "
                 "AND intent = 'edit' AND agent_id != ?",
-                (claim.path, claim.agent_id),
+                (claim.path, claim.resource_type.value, claim.agent_id),
             ).fetchall()
             conflicts = [_row_to_claim(r) for r in rows]
 
@@ -254,24 +274,26 @@ def check_and_claim(claim: Claim, force: bool = False,
         if conflicts and force:
             conn.execute(
                 "UPDATE claims SET state = 'expired' "
-                "WHERE path = ? AND state = 'active' AND intent = 'edit' AND agent_id != ?",
-                (claim.path, claim.agent_id),
+                "WHERE path = ? AND resource_type = ? AND state = 'active' "
+                "AND intent = 'edit' AND agent_id != ?",
+                (claim.path, claim.resource_type.value, claim.agent_id),
             )
 
-        # Release any existing active claim by this agent on same path
+        # Release any existing active claim by this agent on same path + resource_type
         conn.execute(
             "UPDATE claims SET state = 'released', released_at = ? "
-            "WHERE agent_id = ? AND path = ? AND state = 'active'",
-            (now, claim.agent_id, claim.path),
+            "WHERE agent_id = ? AND path = ? AND resource_type = ? AND state = 'active'",
+            (now, claim.agent_id, claim.path, claim.resource_type.value),
         )
         # Insert new claim
         conn.execute(
             "INSERT INTO claims "
-            "(claim_id, agent_id, path, intent, state, ttl_s, created_at, expires_at, released_at, reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (claim.claim_id, claim.agent_id, claim.path, claim.intent.value,
-             claim.state.value, claim.ttl_s, claim.created_at, claim.expires_at,
-             claim.released_at, claim.reason),
+            "(claim_id, agent_id, path, resource_type, intent, state, ttl_s, "
+            "created_at, expires_at, released_at, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (claim.claim_id, claim.agent_id, claim.path, claim.resource_type.value,
+             claim.intent.value, claim.state.value, claim.ttl_s, claim.created_at,
+             claim.expires_at, claim.released_at, claim.reason),
         )
         conn.commit()
         return True, conflicts
@@ -282,7 +304,9 @@ def check_and_claim(claim: Claim, force: bool = False,
         conn.close()
 
 
-def release_claim(agent_id: str, path: str | None = None, release_all: bool = False,
+def release_claim(agent_id: str, path: str | None = None,
+                  resource_type: ResourceType = ResourceType.FILE,
+                  release_all: bool = False,
                   data_dir: Path | None = None) -> int:
     from .models import _now
     conn = get_connection(data_dir)
@@ -297,8 +321,8 @@ def release_claim(agent_id: str, path: str | None = None, release_all: bool = Fa
         elif path:
             cur = conn.execute(
                 "UPDATE claims SET state = 'released', released_at = ? "
-                "WHERE agent_id = ? AND path = ? AND state = 'active'",
-                (now, agent_id, path),
+                "WHERE agent_id = ? AND path = ? AND resource_type = ? AND state = 'active'",
+                (now, agent_id, path, resource_type.value),
             )
         else:
             return 0
@@ -501,7 +525,8 @@ def _row_to_agent(row: sqlite3.Row) -> Agent:
 def _row_to_claim(row: sqlite3.Row) -> Claim:
     return Claim(
         claim_id=row["claim_id"], agent_id=row["agent_id"], path=row["path"],
-        intent=row["intent"], state=row["state"], ttl_s=row["ttl_s"],
+        resource_type=row["resource_type"], intent=row["intent"],
+        state=row["state"], ttl_s=row["ttl_s"],
         created_at=row["created_at"], expires_at=row["expires_at"],
         released_at=row["released_at"], reason=row["reason"],
     )
