@@ -15,4 +15,6 @@ jobs:
       - name: AgentMesh lineage coverage
         uses: Haserjian/agentmesh-action@v1
         with:
-          require-trailers: "false"
+          require-trailers: "true"
+          verify-witness: "true"
+          require-witness: "true"

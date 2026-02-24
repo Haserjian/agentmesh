@@ -54,3 +54,5 @@ jobs:
           agentmesh >/dev/null
           agentmesh doctor --help
           agentmesh mcp --help
+          agentmesh orch --help
+          agentmesh watchdog --help
