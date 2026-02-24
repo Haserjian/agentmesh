@@ -13,7 +13,7 @@ import typer
 from rich.console import Console
 
 from . import __version__
-from .models import Agent, AgentKind, AgentStatus, ClaimIntent, EventKind, Severity, _now
+from .models import Agent, AgentKind, AgentStatus, ClaimIntent, EventKind, Severity, TaskState, _now
 from . import db, events, claims, messages, status, capsules, episodes, gitbridge, weaver
 
 app = typer.Typer(name="agentmesh", help="Local-first multi-agent coordination substrate.")
@@ -921,6 +921,7 @@ def task_start(
         "--reuse-current/--new-episode",
         help="Reuse current episode if one is active",
     ),
+    orch_task: Optional[str] = typer.Option(None, "--orch-task", help="Orchestrator task ID to transition to RUNNING"),
 ) -> None:
     """Start a task: ensure an episode exists and optionally claim resources."""
     _ensure_db()
@@ -929,6 +930,45 @@ def task_start(
     policy = _load_policy(Path.cwd())
     policy_ttl = _policy_get(policy, ["claims", "ttl_seconds"], 1800)
     effective_ttl = ttl if ttl is not None else (policy_ttl if isinstance(policy_ttl, int) else 1800)
+
+    # Bridge to orchestrator if --orch-task is provided
+    if orch_task:
+        from . import orchestrator
+        orch_t = db.get_task(orch_task, _get_data_dir())
+        if orch_t is None:
+            console.print(f"Orchestrator task {orch_task} not found", style="red")
+            raise typer.Exit(1)
+        try:
+            orchestrator.transition_task(orch_task, TaskState.RUNNING, agent_id=agent_id, data_dir=_get_data_dir())
+        except orchestrator.TransitionError as e:
+            console.print(str(e), style="red")
+            raise typer.Exit(1)
+        console.print(f"Orch task [bold]{orch_task}[/bold] -> running")
+        # Use the orchestrator task's episode if available
+        if orch_t.episode_id:
+            ep_id = orch_t.episode_id
+            console.print(f"Using episode [bold]{ep_id}[/bold] (from orch task)")
+            if not claim_resources:
+                console.print("[dim]No claims requested[/dim]")
+            else:
+                had_conflict = False
+                for resource in claim_resources:
+                    ok, clm, conflicts = claims.make_claim(
+                        agent_id, resource, intent=ClaimIntent.EDIT,
+                        ttl_s=effective_ttl, reason=f"task:{title}",
+                        data_dir=_get_data_dir(),
+                    )
+                    if ok:
+                        rt_label = clm.resource_type.value.upper() if clm.resource_type.value != "file" else ""
+                        prefix = f"[{rt_label}] " if rt_label else ""
+                        console.print(f"Claimed {prefix}[bold]{clm.path}[/bold] (ttl={effective_ttl}s)")
+                    else:
+                        had_conflict = True
+                        console.print(f"CONFLICT on [bold]{resource}[/bold]:", style="red bold")
+                        console.print(claims.format_conflict(conflicts))
+                if had_conflict:
+                    raise typer.Exit(1)
+            return
 
     ep_id = episodes.get_current_episode(_get_data_dir()) if reuse_current else ""
     created_new = False
@@ -989,6 +1029,7 @@ def task_finish(
         "--end-episode/--keep-episode",
         help="End the current episode after commit (default from policy)",
     ),
+    orch_task: Optional[str] = typer.Option(None, "--orch-task", help="Orchestrator task ID to transition to PR_OPEN"),
 ) -> None:
     """Finish a task: commit with provenance, optionally release claims and end episode."""
     _ensure_db()
@@ -1020,6 +1061,15 @@ def task_finish(
         run_tests=effective_run_tests,
         capsule=effective_capsule,
     )
+
+    # Bridge to orchestrator: transition to PR_OPEN after successful commit
+    if orch_task:
+        from . import orchestrator
+        try:
+            orchestrator.transition_task(orch_task, TaskState.PR_OPEN, agent_id=agent_id, data_dir=_get_data_dir())
+            console.print(f"Orch task [bold]{orch_task}[/bold] -> pr_open")
+        except orchestrator.TransitionError as e:
+            console.print(f"Orch transition warning: {e}", style="yellow")
 
     if effective_release_all:
         released = claims.release(agent_id, release_all=True, data_dir=_get_data_dir())
@@ -1108,6 +1158,194 @@ def weave_export(
     else:
         evts = db.list_weave_events(_get_data_dir(), episode_id=episode)
         console.print(json.dumps([e.model_dump() for e in evts], indent=2))
+
+
+# -- Orchestrator commands --
+
+orch_app = typer.Typer(help="Task orchestrator lifecycle commands.")
+app.add_typer(orch_app, name="orch")
+
+
+@orch_app.command(name="create")
+def orch_create(
+    title: str = typer.Option(..., "--title", "-t", help="Task title"),
+    description: str = typer.Option("", "--description", "-d", help="Task description"),
+    episode: str = typer.Option("", "--episode", "-e", help="Episode ID to link"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Create a new orchestrator task (starts in PLANNED state)."""
+    _ensure_db()
+    from . import orchestrator
+    task = orchestrator.create_task(title=title, description=description, episode_id=episode, data_dir=_get_data_dir())
+    if json_out:
+        console.print(json.dumps({"task_id": task.task_id, "state": task.state.value, "title": task.title}, indent=2))
+    else:
+        console.print(f"Created [bold]{task.task_id}[/bold]  state={task.state.value}")
+
+
+@orch_app.command(name="assign")
+def orch_assign(
+    task_id: str = typer.Argument(..., help="Task ID"),
+    agent: str = typer.Option("", "--agent", "-a", help="Agent ID (auto-detected if omitted)"),
+    branch: str = typer.Option("", "--branch", "-b", help="Git branch"),
+) -> None:
+    """Assign a PLANNED task to an agent."""
+    _ensure_db()
+    from . import orchestrator
+    agent_id = agent or _auto_agent_id()
+    _ensure_agent_exists(agent_id)
+    try:
+        task = orchestrator.assign_task(task_id, agent_id, branch=branch, data_dir=_get_data_dir())
+    except orchestrator.TransitionError as e:
+        console.print(str(e), style="red")
+        raise typer.Exit(1)
+    console.print(f"Assigned [bold]{task.task_id}[/bold] to {agent_id}  state={task.state.value}")
+
+
+@orch_app.command(name="advance")
+def orch_advance(
+    task_id: str = typer.Argument(..., help="Task ID"),
+    to: str = typer.Option(..., "--to", help="Target state (running, pr_open, ci_pass, review_pass, merged)"),
+    reason: str = typer.Option("", "--reason", "-r", help="Reason for transition"),
+    pr_url: str = typer.Option("", "--pr-url", help="PR URL (for pr_open transition)"),
+) -> None:
+    """Advance a task to the next state."""
+    _ensure_db()
+    from . import orchestrator
+    try:
+        to_state = TaskState(to)
+    except ValueError:
+        valid = ", ".join(s.value for s in TaskState)
+        console.print(f"Invalid state '{to}'. Valid: {valid}", style="red")
+        raise typer.Exit(1)
+    kwargs: dict[str, Any] = {}
+    if pr_url:
+        kwargs["pr_url"] = pr_url
+    try:
+        task = orchestrator.transition_task(task_id, to_state, reason=reason, data_dir=_get_data_dir(), **kwargs)
+    except orchestrator.TransitionError as e:
+        console.print(str(e), style="red")
+        raise typer.Exit(1)
+    console.print(f"Advanced [bold]{task.task_id}[/bold] to {task.state.value}")
+
+
+@orch_app.command(name="abort")
+def orch_abort(
+    task_id: str = typer.Argument(..., help="Task ID"),
+    reason: str = typer.Option("", "--reason", "-r", help="Abort reason"),
+) -> None:
+    """Abort a task from any non-terminal state."""
+    _ensure_db()
+    from . import orchestrator
+    try:
+        task = orchestrator.abort_task(task_id, reason=reason, data_dir=_get_data_dir())
+    except orchestrator.TransitionError as e:
+        console.print(str(e), style="red")
+        raise typer.Exit(1)
+    console.print(f"Aborted [bold]{task.task_id}[/bold]")
+
+
+@orch_app.command(name="show")
+def orch_show(
+    task_id: str = typer.Argument(..., help="Task ID"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Show task details and attempts."""
+    _ensure_db()
+    task = db.get_task(task_id, _get_data_dir())
+    if task is None:
+        console.print(f"Task {task_id} not found", style="red")
+        raise typer.Exit(1)
+    attempts = db.list_attempts(task_id, _get_data_dir())
+    if json_out:
+        data = {
+            "task_id": task.task_id,
+            "title": task.title,
+            "description": task.description,
+            "state": task.state.value,
+            "assigned_agent_id": task.assigned_agent_id,
+            "branch": task.branch,
+            "pr_url": task.pr_url,
+            "episode_id": task.episode_id,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+            "attempts": [
+                {"attempt_id": a.attempt_id, "agent_id": a.agent_id, "attempt_number": a.attempt_number,
+                 "outcome": a.outcome, "started_at": a.started_at, "ended_at": a.ended_at}
+                for a in attempts
+            ],
+        }
+        console.print(json.dumps(data, indent=2))
+    else:
+        console.print(f"[bold]{task.task_id}[/bold]  {task.title}")
+        console.print(f"  state={task.state.value}  agent={task.assigned_agent_id or '-'}  branch={task.branch or '-'}")
+        if task.pr_url:
+            console.print(f"  pr={task.pr_url}")
+        if task.description:
+            console.print(f"  desc={task.description}")
+        console.print(f"  created={task.created_at[:19]}  updated={task.updated_at[:19]}")
+        if attempts:
+            console.print(f"  attempts ({len(attempts)}):")
+            for a in attempts:
+                outcome = a.outcome or "in_progress"
+                console.print(f"    #{a.attempt_number} {a.agent_id} {outcome}")
+
+
+@orch_app.command(name="list")
+def orch_list(
+    state: str = typer.Option("", "--state", "-s", help="Filter by state"),
+    agent: str = typer.Option("", "--agent", "-a", help="Filter by assigned agent"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """List orchestrator tasks."""
+    _ensure_db()
+    filter_state = TaskState(state) if state else None
+    tasks = db.list_tasks(data_dir=_get_data_dir(), state=filter_state, assigned_agent_id=agent or None)
+    if json_out:
+        data = [
+            {"task_id": t.task_id, "title": t.title, "state": t.state.value,
+             "assigned_agent_id": t.assigned_agent_id, "branch": t.branch}
+            for t in tasks
+        ]
+        console.print(json.dumps(data, indent=2))
+    else:
+        if not tasks:
+            console.print("[dim]No tasks[/dim]")
+            return
+        for t in tasks:
+            agent_str = t.assigned_agent_id or "-"
+            console.print(f"  {t.task_id}  {t.state.value:12}  {agent_str:20}  {t.title}")
+
+
+# -- Watchdog command --
+
+@app.command(name="watchdog")
+def watchdog_cmd(
+    threshold: int = typer.Option(300, "--threshold", "-t", help="Stale threshold in seconds"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Run watchdog scan: detect stale agents, reap them, abort their tasks."""
+    _ensure_db()
+    from . import watchdog
+    result = watchdog.scan(stale_threshold_s=threshold, data_dir=_get_data_dir())
+    if json_out:
+        data = {
+            "stale_agents": result.stale_agents,
+            "reaped_agents": result.reaped_agents,
+            "aborted_tasks": result.aborted_tasks,
+            "clean": result.clean,
+        }
+        console.print(json.dumps(data, indent=2))
+    elif result.clean:
+        console.print("[green]Clean[/green] -- no stale agents")
+    else:
+        console.print(f"Stale agents: {len(result.stale_agents)}")
+        for a in result.stale_agents:
+            console.print(f"  reaped: {a}")
+        if result.aborted_tasks:
+            console.print(f"Aborted tasks: {len(result.aborted_tasks)}")
+            for t in result.aborted_tasks:
+                console.print(f"  {t}")
 
 
 # -- Witness commands --
