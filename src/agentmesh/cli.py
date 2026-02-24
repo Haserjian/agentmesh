@@ -323,6 +323,7 @@ def bundle_emit(
 def bundle_get(
     capsule_id: str = typer.Argument(..., help="Capsule ID"),
     json_out: bool = typer.Option(False, "--json", help="JSON output"),
+    sbar: bool = typer.Option(False, "--sbar", help="Show SBAR handoff summary"),
 ) -> None:
     """Get a context capsule."""
     _ensure_db()
@@ -332,6 +333,27 @@ def bundle_get(
         raise typer.Exit(1)
     if json_out:
         console.print(json.dumps(bundle, indent=2))
+    elif sbar:
+        sbar_data = bundle.get("sbar", {})
+        if not sbar_data:
+            console.print("No SBAR data in this capsule", style="yellow")
+            return
+        console.print(f"[bold]SBAR Handoff -- {capsule_id}[/bold]\n")
+        sit = sbar_data.get("situation", {})
+        console.print(f"[bold cyan]S[/bold cyan]ituation: {sit.get('global_objective', '')}  ({sit.get('git_head', '')})")
+        bg = sbar_data.get("background", {})
+        n_files = len(bg.get("changed_files", []))
+        console.print(f"[bold cyan]B[/bold cyan]ackground: {n_files} file(s) changed")
+        for f in bg.get("changed_files", []):
+            console.print(f"  {f.get('path', '')}")
+        assess = sbar_data.get("assessment", {})
+        console.print(f"[bold cyan]A[/bold cyan]ssessment: tests={assess.get('test_status', 'unknown')}, open_claims={len(assess.get('open_claims', []))}")
+        rec = sbar_data.get("recommendation", {})
+        actions = rec.get("next_actions", [])
+        blockers = rec.get("blockers", [])
+        console.print(f"[bold cyan]R[/bold cyan]ecommendation: {len(actions)} action(s), {len(blockers)} blocker(s)")
+        for a in actions:
+            console.print(f"  - {a}")
     else:
         console.print(f"Capsule: [bold]{capsule_id}[/bold]")
         console.print(f"  Agent: {bundle['agent_id']}")
@@ -340,6 +362,8 @@ def bundle_get(
         console.print(f"  Branch: {git.get('branch', '')}  SHA: {git.get('sha', '')}")
         mesh = bundle.get("mesh", {})
         console.print(f"  Claims: {len(mesh.get('open_claims', []))}  Agents: {len(mesh.get('active_agents', []))}")
+        if bundle.get("sbar"):
+            console.print("  [dim]SBAR available (use --sbar to view)[/dim]")
 
 
 # -- Hooks commands --

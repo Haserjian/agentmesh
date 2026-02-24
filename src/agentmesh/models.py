@@ -119,6 +119,7 @@ class Capsule(BaseModel, frozen=True):
     what_remains: str = ""
     risks: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
+    sbar: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=_now)
 
 

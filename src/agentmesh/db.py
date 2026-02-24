@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS capsules (
     what_remains TEXT NOT NULL DEFAULT '',
     risks TEXT NOT NULL DEFAULT '[]',
     next_actions TEXT NOT NULL DEFAULT '[]',
+    sbar TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
 """
@@ -137,6 +138,7 @@ def init_db(data_dir: Path | None = None) -> None:
     finally:
         conn.close()
     migrate_claims_add_resource_type(data_dir)
+    migrate_capsules_add_sbar(data_dir)
 
 
 def migrate_claims_add_resource_type(data_dir: Path | None = None) -> None:
@@ -147,6 +149,20 @@ def migrate_claims_add_resource_type(data_dir: Path | None = None) -> None:
         if "resource_type" not in cols:
             conn.execute(
                 "ALTER TABLE claims ADD COLUMN resource_type TEXT NOT NULL DEFAULT 'file'"
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def migrate_capsules_add_sbar(data_dir: Path | None = None) -> None:
+    """Add sbar column to existing capsules table if missing."""
+    conn = get_connection(data_dir)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(capsules)").fetchall()]
+        if "sbar" not in cols:
+            conn.execute(
+                "ALTER TABLE capsules ADD COLUMN sbar TEXT NOT NULL DEFAULT '{}'"
             )
             conn.commit()
     finally:
@@ -476,14 +492,14 @@ def save_capsule(capsule: Capsule, data_dir: Path | None = None) -> None:
             "INSERT INTO capsules "
             "(capsule_id, agent_id, task_desc, git_branch, git_sha, diff_stat, "
             "files_changed, test_status, test_summary, what_changed, what_remains, "
-            "risks, next_actions, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "risks, next_actions, sbar, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (capsule.capsule_id, capsule.agent_id, capsule.task_desc,
              capsule.git_branch, capsule.git_sha, capsule.diff_stat,
              json.dumps(capsule.files_changed), capsule.test_status, capsule.test_summary,
              capsule.what_changed, capsule.what_remains,
              json.dumps(capsule.risks), json.dumps(capsule.next_actions),
-             capsule.created_at),
+             json.dumps(capsule.sbar), capsule.created_at),
         )
         conn.commit()
     finally:
@@ -584,5 +600,6 @@ def _row_to_capsule(row: sqlite3.Row) -> Capsule:
         test_status=row["test_status"], test_summary=row["test_summary"],
         what_changed=row["what_changed"], what_remains=row["what_remains"],
         risks=json.loads(row["risks"]), next_actions=json.loads(row["next_actions"]),
+        sbar=json.loads(row["sbar"]),
         created_at=row["created_at"],
     )
