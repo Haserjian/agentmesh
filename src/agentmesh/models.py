@@ -62,6 +62,10 @@ class EventKind(str, enum.Enum):
     STATUS_CHANGE = "STATUS_CHANGE"
     GC = "GC"
     SOFT_CONFLICT = "SOFT_CONFLICT"
+    EPISODE_START = "EPISODE_START"
+    EPISODE_END = "EPISODE_END"
+    WAIT = "WAIT"
+    STEAL = "STEAL"
 
 
 def _now() -> str:
@@ -93,6 +97,9 @@ class Claim(BaseModel, frozen=True):
     expires_at: str = ""
     released_at: str | None = None
     reason: str = ""
+    episode_id: str = ""
+    priority: int = 5
+    effective_priority: int = 5
 
 
 class Message(BaseModel, frozen=True):
@@ -104,6 +111,7 @@ class Message(BaseModel, frozen=True):
     body: str = ""
     read_by: list[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=_now)
+    episode_id: str = ""
 
 
 class Capsule(BaseModel, frozen=True):
@@ -121,6 +129,40 @@ class Capsule(BaseModel, frozen=True):
     risks: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
     sbar: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=_now)
+    episode_id: str = ""
+
+
+class Episode(BaseModel, frozen=True):
+    episode_id: str
+    title: str = ""
+    started_at: str = Field(default_factory=_now)
+    ended_at: str = ""
+    parent_episode_id: str = ""
+
+
+class WeaveEvent(BaseModel, frozen=True):
+    event_id: str
+    episode_id: str = ""
+    prev_hash: str = ""
+    capsule_id: str = ""
+    git_commit_sha: str = ""
+    git_patch_hash: str = ""
+    affected_symbols: list[str] = Field(default_factory=list)
+    trace_id: str = ""
+    parent_event_id: str = ""
+    event_hash: str = ""
+    created_at: str = Field(default_factory=_now)
+
+
+class Waiter(BaseModel, frozen=True):
+    waiter_id: str
+    resource_path: str
+    resource_type: ResourceType = ResourceType.FILE
+    waiter_agent_id: str = ""
+    episode_id: str = ""
+    priority: int = 5
+    reason: str = ""
     created_at: str = Field(default_factory=_now)
 
 

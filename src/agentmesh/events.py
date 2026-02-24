@@ -29,10 +29,26 @@ def _hash_event(data: dict[str, Any]) -> str:
     return f"sha256:{h}"
 
 
-def _read_last_event(path: Path) -> tuple[int, str]:
-    """Read last seq and hash from the event log. Returns (0, genesis) if empty."""
+def _parse_event_id_number(event_id: str | None, fallback: int) -> int:
+    """Parse numeric suffix from event IDs like evt_000123."""
+    if not event_id:
+        return fallback
+    raw = event_id
+    if raw.startswith("evt_"):
+        raw = raw.split("_", 1)[1]
+    try:
+        return int(raw)
+    except ValueError:
+        return fallback
+
+
+def _read_last_event(path: Path) -> tuple[int, str, int]:
+    """Read last seq/hash/id-num from the event log.
+
+    Returns (0, genesis, 0) if empty.
+    """
     if not path.exists() or path.stat().st_size == 0:
-        return 0, _GENESIS_HASH
+        return 0, _GENESIS_HASH, 0
     # Read last non-empty line
     with open(path, "r") as f:
         last_line = ""
@@ -41,9 +57,11 @@ def _read_last_event(path: Path) -> tuple[int, str]:
             if stripped:
                 last_line = stripped
     if not last_line:
-        return 0, _GENESIS_HASH
+        return 0, _GENESIS_HASH, 0
     last = json.loads(last_line)
-    return last["seq"], last["event_hash"]
+    seq = int(last["seq"])
+    event_num = _parse_event_id_number(last.get("event_id"), seq)
+    return seq, last["event_hash"], event_num
 
 
 def append_event(
@@ -61,9 +79,10 @@ def append_event(
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:
             # Read current state while holding lock
-            seq, prev_hash = _read_last_event(path)
+            seq, prev_hash, event_num = _read_last_event(path)
             new_seq = seq + 1
-            event_id = f"evt_{new_seq:06d}"
+            new_event_num = max(event_num, new_seq - 1) + 1
+            event_id = f"evt_{new_event_num:06d}"
 
             data = {
                 "event_id": event_id,

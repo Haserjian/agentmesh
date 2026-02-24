@@ -22,19 +22,25 @@ def post(
     to_agent: str | None = None,
     channel: str = "general",
     severity: Severity = Severity.FYI,
+    episode_id: str | None = None,
     data_dir: Path | None = None,
 ) -> Message:
-    """Post a message to the board."""
+    """Post a message to the board. Auto-tags with current episode if episode_id is None."""
+    if episode_id is None:
+        from .episodes import get_current_episode
+        episode_id = get_current_episode(data_dir)
+
     msg_id = f"msg_{uuid.uuid4().hex[:12]}"
     msg = Message(
         msg_id=msg_id, from_agent=from_agent, to_agent=to_agent,
         channel=channel, severity=severity, body=body,
-        created_at=_now(),
+        created_at=_now(), episode_id=episode_id,
     )
     db.post_message(msg, data_dir)
     events.append_event(
         EventKind.MSG, agent_id=from_agent,
-        payload={"msg_id": msg_id, "to": to_agent, "severity": severity.value, "channel": channel},
+        payload={"msg_id": msg_id, "to": to_agent, "severity": severity.value,
+                 "channel": channel, "episode_id": episode_id},
         data_dir=data_dir,
     )
     return msg

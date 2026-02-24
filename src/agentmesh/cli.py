@@ -13,7 +13,7 @@ from rich.console import Console
 
 from . import __version__
 from .models import Agent, AgentKind, AgentStatus, ClaimIntent, EventKind, Severity, _now
-from . import db, events, claims, messages, status, capsules
+from . import db, events, claims, messages, status, capsules, episodes
 
 app = typer.Typer(name="agentmesh", help="Local-first multi-agent coordination substrate.")
 console = Console()
@@ -364,6 +364,66 @@ def bundle_get(
         console.print(f"  Claims: {len(mesh.get('open_claims', []))}  Agents: {len(mesh.get('active_agents', []))}")
         if bundle.get("sbar"):
             console.print("  [dim]SBAR available (use --sbar to view)[/dim]")
+
+
+# -- Episode commands --
+
+episode_app = typer.Typer(help="Episode lifecycle commands.")
+app.add_typer(episode_app, name="episode")
+
+
+@episode_app.command(name="start")
+def episode_start(
+    title: str = typer.Option("", "--title", "-t", help="Episode title"),
+    parent: str = typer.Option("", "--parent", "-p", help="Parent episode ID"),
+) -> None:
+    """Start a new episode."""
+    _ensure_db()
+    ep_id = episodes.start_episode(
+        title=title, parent_episode_id=parent, data_dir=_get_data_dir(),
+    )
+    events.append_event(
+        EventKind.EPISODE_START,
+        payload={"episode_id": ep_id, "title": title},
+        data_dir=_get_data_dir(),
+    )
+    console.print(f"Episode [bold]{ep_id}[/bold] started")
+    if title:
+        console.print(f"  title={title}")
+
+
+@episode_app.command(name="current")
+def episode_current() -> None:
+    """Show current episode."""
+    _ensure_db()
+    ep_id = episodes.get_current_episode(_get_data_dir())
+    if not ep_id:
+        console.print("[dim]No active episode[/dim]")
+        return
+    ep = db.get_episode(ep_id, _get_data_dir())
+    if ep:
+        console.print(f"Episode [bold]{ep.episode_id}[/bold]")
+        if ep.title:
+            console.print(f"  title={ep.title}")
+        console.print(f"  started={ep.started_at[:19]}")
+    else:
+        console.print(f"Episode [bold]{ep_id}[/bold] (no DB record)")
+
+
+@episode_app.command(name="end")
+def episode_end() -> None:
+    """End the current episode."""
+    _ensure_db()
+    ep_id = episodes.end_episode(_get_data_dir())
+    if not ep_id:
+        console.print("[dim]No active episode to end[/dim]")
+        return
+    events.append_event(
+        EventKind.EPISODE_END,
+        payload={"episode_id": ep_id},
+        data_dir=_get_data_dir(),
+    )
+    console.print(f"Episode [bold]{ep_id}[/bold] ended")
 
 
 # -- Hooks commands --

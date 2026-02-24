@@ -49,18 +49,26 @@ def make_claim(
     reason: str = "",
     force: bool = False,
     resource_type: ResourceType | None = None,
+    episode_id: str | None = None,
+    priority: int = 5,
     data_dir: Path | None = None,
 ) -> tuple[bool, Claim, list[Claim]]:
     """Create a claim with conflict detection.
 
     Returns (success, claim, conflicts).
     If resource_type is None, parses from path string (e.g. "PORT:3000").
+    If episode_id is None, auto-reads current episode.
     """
     if resource_type is not None:
         rt = resource_type
         norm = normalize_path(path) if rt == ResourceType.FILE else path
     else:
         rt, norm = parse_resource_string(path)
+
+    # Auto-tag with current episode
+    if episode_id is None:
+        from .episodes import get_current_episode
+        episode_id = get_current_episode(data_dir)
 
     now_str = _now()
     now_dt = datetime.now(timezone.utc)
@@ -71,7 +79,8 @@ def make_claim(
         claim_id=claim_id, agent_id=agent_id, path=norm,
         resource_type=rt, intent=intent, state=ClaimState.ACTIVE,
         ttl_s=ttl_s, created_at=now_str, expires_at=expires,
-        reason=reason,
+        reason=reason, episode_id=episode_id, priority=priority,
+        effective_priority=priority,
     )
 
     success, conflicts = db.check_and_claim(claim, force=force, data_dir=data_dir)
@@ -82,6 +91,7 @@ def make_claim(
             payload={
                 "claim_id": claim_id, "path": norm, "resource_type": rt.value,
                 "intent": intent.value, "ttl_s": ttl_s,
+                "episode_id": episode_id,
             },
             data_dir=data_dir,
         )

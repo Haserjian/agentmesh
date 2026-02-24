@@ -11,7 +11,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .models import Agent, AgentStatus, Claim, ClaimIntent, ClaimState, Message, ResourceType, Severity, Capsule
+from .models import (
+    Agent, AgentStatus, Capsule, Claim, ClaimIntent, ClaimState,
+    Episode, Message, ResourceType, Severity, Waiter, WeaveEvent,
+)
 
 _DEFAULT_DIR = Path.home() / ".agentmesh"
 
@@ -78,9 +81,6 @@ CREATE TABLE IF NOT EXISTS claims (
     reason TEXT NOT NULL DEFAULT ''
 );
 
-CREATE INDEX IF NOT EXISTS idx_claims_active_path
-    ON claims(resource_type, path) WHERE state = 'active';
-
 CREATE TABLE IF NOT EXISTS messages (
     msg_id TEXT PRIMARY KEY,
     from_agent TEXT NOT NULL,
@@ -110,6 +110,39 @@ CREATE TABLE IF NOT EXISTS capsules (
     sbar TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS episodes (
+    episode_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL DEFAULT '',
+    parent_episode_id TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS weave_events (
+    event_id TEXT PRIMARY KEY,
+    episode_id TEXT NOT NULL DEFAULT '',
+    prev_hash TEXT NOT NULL DEFAULT '',
+    capsule_id TEXT NOT NULL DEFAULT '',
+    git_commit_sha TEXT NOT NULL DEFAULT '',
+    git_patch_hash TEXT NOT NULL DEFAULT '',
+    affected_symbols TEXT NOT NULL DEFAULT '[]',
+    trace_id TEXT NOT NULL DEFAULT '',
+    parent_event_id TEXT NOT NULL DEFAULT '',
+    event_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS waiters (
+    waiter_id TEXT PRIMARY KEY,
+    resource_path TEXT NOT NULL,
+    resource_type TEXT NOT NULL DEFAULT 'file',
+    waiter_agent_id TEXT NOT NULL DEFAULT '',
+    episode_id TEXT NOT NULL DEFAULT '',
+    priority INTEGER NOT NULL DEFAULT 5,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -117,6 +150,14 @@ def _db_path(data_dir: Path | None = None) -> Path:
     d = data_dir or _DEFAULT_DIR
     d.mkdir(parents=True, exist_ok=True)
     return d / "board.db"
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
 
 
 def get_connection(data_dir: Path | None = None) -> sqlite3.Connection:
@@ -139,18 +180,86 @@ def init_db(data_dir: Path | None = None) -> None:
         conn.close()
     migrate_claims_add_resource_type(data_dir)
     migrate_capsules_add_sbar(data_dir)
+    ensure_claims_active_index(data_dir)
+    migrate_add_episode_id_columns(data_dir)
+    migrate_claims_add_priority(data_dir)
 
 
 def migrate_claims_add_resource_type(data_dir: Path | None = None) -> None:
-    """Add resource_type column to existing claims table if missing."""
+    """Migrate claims table to canonical resource_type-aware schema."""
     conn = get_connection(data_dir)
     try:
+        if not _table_exists(conn, "claims"):
+            return
+
         cols = [r[1] for r in conn.execute("PRAGMA table_info(claims)").fetchall()]
-        if "resource_type" not in cols:
-            conn.execute(
-                "ALTER TABLE claims ADD COLUMN resource_type TEXT NOT NULL DEFAULT 'file'"
-            )
-            conn.commit()
+        has_resource_type = "resource_type" in cols
+
+        ddl_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'claims'"
+        ).fetchone()
+        ddl = (ddl_row[0] if ddl_row and ddl_row[0] else "")
+        normalized_ddl = "".join(ddl.lower().split())
+        has_resource_type_check = (
+            "check(resource_typein('file','port','lock','test_suite','temp_dir'))"
+            in normalized_ddl
+        )
+
+        if has_resource_type and has_resource_type_check:
+            return
+
+        resource_expr = (
+            "CASE "
+            "WHEN lower(coalesce(resource_type, 'file')) "
+            "IN ('file','port','lock','test_suite','temp_dir') "
+            "THEN lower(coalesce(resource_type, 'file')) "
+            "ELSE 'file' END"
+            if has_resource_type
+            else "'file'"
+        )
+        intent_expr = (
+            "CASE WHEN intent IN ('edit','read','test','review') "
+            "THEN intent ELSE 'edit' END"
+        )
+        state_expr = (
+            "CASE WHEN state IN ('active','released','expired') "
+            "THEN state ELSE 'active' END"
+        )
+
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "CREATE TABLE claims_new ("
+            "claim_id TEXT PRIMARY KEY,"
+            "agent_id TEXT NOT NULL REFERENCES agents(agent_id),"
+            "path TEXT NOT NULL,"
+            "resource_type TEXT NOT NULL DEFAULT 'file' "
+            "CHECK(resource_type IN ('file','port','lock','test_suite','temp_dir')),"
+            "intent TEXT NOT NULL DEFAULT 'edit' "
+            "CHECK(intent IN ('edit','read','test','review')),"
+            "state TEXT NOT NULL DEFAULT 'active' "
+            "CHECK(state IN ('active','released','expired')),"
+            "ttl_s INTEGER NOT NULL DEFAULT 1800,"
+            "created_at TEXT NOT NULL,"
+            "expires_at TEXT NOT NULL,"
+            "released_at TEXT,"
+            "reason TEXT NOT NULL DEFAULT ''"
+            ")"
+        )
+        conn.execute(
+            "INSERT INTO claims_new "
+            "(claim_id, agent_id, path, resource_type, intent, state, ttl_s, "
+            "created_at, expires_at, released_at, reason) "
+            "SELECT claim_id, agent_id, path, "
+            f"{resource_expr}, {intent_expr}, {state_expr}, "
+            "ttl_s, created_at, expires_at, released_at, reason "
+            "FROM claims"
+        )
+        conn.execute("DROP TABLE claims")
+        conn.execute("ALTER TABLE claims_new RENAME TO claims")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -159,12 +268,70 @@ def migrate_capsules_add_sbar(data_dir: Path | None = None) -> None:
     """Add sbar column to existing capsules table if missing."""
     conn = get_connection(data_dir)
     try:
+        if not _table_exists(conn, "capsules"):
+            return
         cols = [r[1] for r in conn.execute("PRAGMA table_info(capsules)").fetchall()]
         if "sbar" not in cols:
             conn.execute(
                 "ALTER TABLE capsules ADD COLUMN sbar TEXT NOT NULL DEFAULT '{}'"
             )
             conn.commit()
+    finally:
+        conn.close()
+
+
+def ensure_claims_active_index(data_dir: Path | None = None) -> None:
+    """Ensure claims active index uses (resource_type, path) key order."""
+    conn = get_connection(data_dir)
+    try:
+        if not _table_exists(conn, "claims"):
+            return
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(claims)").fetchall()]
+        if "resource_type" not in cols:
+            return
+        conn.execute("DROP INDEX IF EXISTS idx_claims_active_path")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_claims_active_path "
+            "ON claims(resource_type, path) WHERE state = 'active'"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def migrate_add_episode_id_columns(data_dir: Path | None = None) -> None:
+    """Add episode_id column to claims, capsules, messages if missing."""
+    conn = get_connection(data_dir)
+    try:
+        for table in ("claims", "capsules", "messages"):
+            if not _table_exists(conn, table):
+                continue
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+            if "episode_id" not in cols:
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN episode_id TEXT NOT NULL DEFAULT ''"
+                )
+                conn.commit()
+    finally:
+        conn.close()
+
+
+def migrate_claims_add_priority(data_dir: Path | None = None) -> None:
+    """Add priority + effective_priority columns to claims if missing."""
+    conn = get_connection(data_dir)
+    try:
+        if not _table_exists(conn, "claims"):
+            return
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(claims)").fetchall()]
+        if "priority" not in cols:
+            conn.execute(
+                "ALTER TABLE claims ADD COLUMN priority INTEGER NOT NULL DEFAULT 5"
+            )
+        if "effective_priority" not in cols:
+            conn.execute(
+                "ALTER TABLE claims ADD COLUMN effective_priority INTEGER NOT NULL DEFAULT 5"
+            )
+        conn.commit()
     finally:
         conn.close()
 
@@ -256,11 +423,12 @@ def create_claim(claim: Claim, data_dir: Path | None = None) -> None:
         conn.execute(
             "INSERT INTO claims "
             "(claim_id, agent_id, path, resource_type, intent, state, ttl_s, "
-            "created_at, expires_at, released_at, reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_at, expires_at, released_at, reason, episode_id, priority, effective_priority) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (claim.claim_id, claim.agent_id, claim.path, claim.resource_type.value,
              claim.intent.value, claim.state.value, claim.ttl_s, claim.created_at,
-             claim.expires_at, claim.released_at, claim.reason),
+             claim.expires_at, claim.released_at, claim.reason,
+             claim.episode_id, claim.priority, claim.effective_priority),
         )
         conn.commit()
     finally:
@@ -337,11 +505,12 @@ def check_and_claim(claim: Claim, force: bool = False,
         conn.execute(
             "INSERT INTO claims "
             "(claim_id, agent_id, path, resource_type, intent, state, ttl_s, "
-            "created_at, expires_at, released_at, reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_at, expires_at, released_at, reason, episode_id, priority, effective_priority) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (claim.claim_id, claim.agent_id, claim.path, claim.resource_type.value,
              claim.intent.value, claim.state.value, claim.ttl_s, claim.created_at,
-             claim.expires_at, claim.released_at, claim.reason),
+             claim.expires_at, claim.released_at, claim.reason,
+             claim.episode_id, claim.priority, claim.effective_priority),
         )
         conn.commit()
         return True, conflicts
@@ -425,10 +594,11 @@ def post_message(msg: Message, data_dir: Path | None = None) -> None:
     try:
         conn.execute(
             "INSERT INTO messages "
-            "(msg_id, from_agent, to_agent, channel, severity, body, read_by, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(msg_id, from_agent, to_agent, channel, severity, body, read_by, created_at, episode_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (msg.msg_id, msg.from_agent, msg.to_agent, msg.channel,
-             msg.severity.value, msg.body, json.dumps(msg.read_by), msg.created_at),
+             msg.severity.value, msg.body, json.dumps(msg.read_by), msg.created_at,
+             msg.episode_id),
         )
         conn.commit()
     finally:
@@ -492,14 +662,14 @@ def save_capsule(capsule: Capsule, data_dir: Path | None = None) -> None:
             "INSERT INTO capsules "
             "(capsule_id, agent_id, task_desc, git_branch, git_sha, diff_stat, "
             "files_changed, test_status, test_summary, what_changed, what_remains, "
-            "risks, next_actions, sbar, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "risks, next_actions, sbar, created_at, episode_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (capsule.capsule_id, capsule.agent_id, capsule.task_desc,
              capsule.git_branch, capsule.git_sha, capsule.diff_stat,
              json.dumps(capsule.files_changed), capsule.test_status, capsule.test_summary,
              capsule.what_changed, capsule.what_remains,
              json.dumps(capsule.risks), json.dumps(capsule.next_actions),
-             json.dumps(capsule.sbar), capsule.created_at),
+             json.dumps(capsule.sbar), capsule.created_at, capsule.episode_id),
         )
         conn.commit()
     finally:
@@ -574,24 +744,31 @@ def _row_to_agent(row: sqlite3.Row) -> Agent:
 
 
 def _row_to_claim(row: sqlite3.Row) -> Claim:
+    keys = row.keys()
     return Claim(
         claim_id=row["claim_id"], agent_id=row["agent_id"], path=row["path"],
         resource_type=row["resource_type"], intent=row["intent"],
         state=row["state"], ttl_s=row["ttl_s"],
         created_at=row["created_at"], expires_at=row["expires_at"],
         released_at=row["released_at"], reason=row["reason"],
+        episode_id=row["episode_id"] if "episode_id" in keys else "",
+        priority=row["priority"] if "priority" in keys else 5,
+        effective_priority=row["effective_priority"] if "effective_priority" in keys else 5,
     )
 
 
 def _row_to_message(row: sqlite3.Row) -> Message:
+    keys = row.keys()
     return Message(
         msg_id=row["msg_id"], from_agent=row["from_agent"], to_agent=row["to_agent"],
         channel=row["channel"], severity=row["severity"], body=row["body"],
         read_by=json.loads(row["read_by"]), created_at=row["created_at"],
+        episode_id=row["episode_id"] if "episode_id" in keys else "",
     )
 
 
 def _row_to_capsule(row: sqlite3.Row) -> Capsule:
+    keys = row.keys()
     return Capsule(
         capsule_id=row["capsule_id"], agent_id=row["agent_id"],
         task_desc=row["task_desc"], git_branch=row["git_branch"],
@@ -602,4 +779,329 @@ def _row_to_capsule(row: sqlite3.Row) -> Capsule:
         risks=json.loads(row["risks"]), next_actions=json.loads(row["next_actions"]),
         sbar=json.loads(row["sbar"]),
         created_at=row["created_at"],
+        episode_id=row["episode_id"] if "episode_id" in keys else "",
     )
+
+
+def _row_to_episode(row: sqlite3.Row) -> Episode:
+    return Episode(
+        episode_id=row["episode_id"],
+        title=row["title"],
+        started_at=row["started_at"],
+        ended_at=row["ended_at"],
+        parent_episode_id=row["parent_episode_id"],
+    )
+
+
+def _row_to_weave_event(row: sqlite3.Row) -> WeaveEvent:
+    return WeaveEvent(
+        event_id=row["event_id"],
+        episode_id=row["episode_id"],
+        prev_hash=row["prev_hash"],
+        capsule_id=row["capsule_id"],
+        git_commit_sha=row["git_commit_sha"],
+        git_patch_hash=row["git_patch_hash"],
+        affected_symbols=json.loads(row["affected_symbols"]),
+        trace_id=row["trace_id"],
+        parent_event_id=row["parent_event_id"],
+        event_hash=row["event_hash"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_waiter(row: sqlite3.Row) -> Waiter:
+    return Waiter(
+        waiter_id=row["waiter_id"],
+        resource_path=row["resource_path"],
+        resource_type=row["resource_type"],
+        waiter_agent_id=row["waiter_agent_id"],
+        episode_id=row["episode_id"],
+        priority=row["priority"],
+        reason=row["reason"],
+        created_at=row["created_at"],
+    )
+
+
+# -- Episode CRUD --
+
+def create_episode(
+    episode_id: str,
+    title: str = "",
+    started_at: str = "",
+    parent_episode_id: str = "",
+    data_dir: Path | None = None,
+) -> None:
+    from .models import _now
+    conn = get_connection(data_dir)
+    try:
+        conn.execute(
+            "INSERT INTO episodes (episode_id, title, started_at, ended_at, parent_episode_id) "
+            "VALUES (?, ?, ?, '', ?)",
+            (episode_id, title, started_at or _now(), parent_episode_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def end_episode(episode_id: str, ended_at: str = "", data_dir: Path | None = None) -> bool:
+    from .models import _now
+    conn = get_connection(data_dir)
+    try:
+        cur = conn.execute(
+            "UPDATE episodes SET ended_at = ? WHERE episode_id = ?",
+            (ended_at or _now(), episode_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_episode(episode_id: str, data_dir: Path | None = None) -> Episode | None:
+    conn = get_connection(data_dir)
+    try:
+        row = conn.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_episode(row)
+    finally:
+        conn.close()
+
+
+def list_episodes(data_dir: Path | None = None, limit: int = 50) -> list[Episode]:
+    conn = get_connection(data_dir)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM episodes ORDER BY started_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [_row_to_episode(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# -- WeaveEvent CRUD --
+
+@_retry_on_busy
+def save_weave_event(event: WeaveEvent, data_dir: Path | None = None) -> None:
+    conn = get_connection(data_dir)
+    try:
+        conn.execute(
+            "INSERT INTO weave_events "
+            "(event_id, episode_id, prev_hash, capsule_id, git_commit_sha, "
+            "git_patch_hash, affected_symbols, trace_id, parent_event_id, "
+            "event_hash, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event.event_id, event.episode_id, event.prev_hash,
+             event.capsule_id, event.git_commit_sha, event.git_patch_hash,
+             json.dumps(event.affected_symbols), event.trace_id,
+             event.parent_event_id, event.event_hash, event.created_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_last_weave_hash(data_dir: Path | None = None) -> str:
+    conn = get_connection(data_dir)
+    try:
+        row = conn.execute(
+            "SELECT event_hash FROM weave_events ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return "sha256:" + "0" * 64
+        return row["event_hash"]
+    finally:
+        conn.close()
+
+
+def list_weave_events(
+    data_dir: Path | None = None,
+    episode_id: str | None = None,
+    limit: int = 100,
+) -> list[WeaveEvent]:
+    conn = get_connection(data_dir)
+    try:
+        if episode_id:
+            rows = conn.execute(
+                "SELECT * FROM weave_events WHERE episode_id = ? ORDER BY created_at LIMIT ?",
+                (episode_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM weave_events ORDER BY created_at LIMIT ?", (limit,)
+            ).fetchall()
+        return [_row_to_weave_event(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# -- Waiter CRUD --
+
+@_retry_on_busy
+def add_waiter(waiter: Waiter, data_dir: Path | None = None) -> None:
+    conn = get_connection(data_dir)
+    try:
+        conn.execute(
+            "INSERT INTO waiters "
+            "(waiter_id, resource_path, resource_type, waiter_agent_id, "
+            "episode_id, priority, reason, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (waiter.waiter_id, waiter.resource_path, waiter.resource_type.value,
+             waiter.waiter_agent_id, waiter.episode_id, waiter.priority,
+             waiter.reason, waiter.created_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_waiters(
+    resource_path: str | None = None,
+    resource_type: ResourceType | None = None,
+    data_dir: Path | None = None,
+) -> list[Waiter]:
+    conn = get_connection(data_dir)
+    try:
+        q = "SELECT * FROM waiters"
+        params: list[Any] = []
+        conditions = []
+        if resource_path:
+            conditions.append("resource_path = ?")
+            params.append(resource_path)
+        if resource_type:
+            conditions.append("resource_type = ?")
+            params.append(resource_type.value)
+        if conditions:
+            q += " WHERE " + " AND ".join(conditions)
+        q += " ORDER BY priority DESC, created_at"
+        rows = conn.execute(q, params).fetchall()
+        return [_row_to_waiter(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def remove_waiters_for_agent(
+    agent_id: str,
+    resource_path: str | None = None,
+    data_dir: Path | None = None,
+) -> int:
+    conn = get_connection(data_dir)
+    try:
+        if resource_path:
+            cur = conn.execute(
+                "DELETE FROM waiters WHERE waiter_agent_id = ? AND resource_path = ?",
+                (agent_id, resource_path),
+            )
+        else:
+            cur = conn.execute(
+                "DELETE FROM waiters WHERE waiter_agent_id = ?", (agent_id,),
+            )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def update_effective_priority(
+    claim_id: str,
+    effective_priority: int,
+    data_dir: Path | None = None,
+) -> None:
+    conn = get_connection(data_dir)
+    try:
+        conn.execute(
+            "UPDATE claims SET effective_priority = ? WHERE claim_id = ?",
+            (effective_priority, claim_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@_retry_on_busy
+def steal_claim(
+    stealer_agent_id: str,
+    new_claim: Claim,
+    stale_threshold_s: int = 300,
+    data_dir: Path | None = None,
+) -> tuple[bool, str]:
+    """Atomic steal: expire old claim if TTL-expired or heartbeat-stale, insert new.
+
+    Returns (success, reason_string).
+    """
+    from .models import _now
+    from datetime import datetime, timedelta, timezone
+    conn = get_connection(data_dir)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        now_str = _now()
+
+        # Find active edit claim on resource
+        rows = conn.execute(
+            "SELECT * FROM claims WHERE path = ? AND resource_type = ? "
+            "AND state = 'active' AND intent = 'edit'",
+            (new_claim.path, new_claim.resource_type.value),
+        ).fetchall()
+        if not rows:
+            conn.rollback()
+            return False, "no active claim to steal"
+
+        old = _row_to_claim(rows[0])
+
+        # Check: TTL expired?
+        ttl_expired = old.expires_at < now_str
+
+        # Check: heartbeat stale?
+        heartbeat_stale = False
+        agent_row = conn.execute(
+            "SELECT last_heartbeat FROM agents WHERE agent_id = ?",
+            (old.agent_id,),
+        ).fetchone()
+        if agent_row:
+            cutoff = (
+                datetime.now(timezone.utc) - timedelta(seconds=stale_threshold_s)
+            ).isoformat()
+            if agent_row["last_heartbeat"] < cutoff:
+                heartbeat_stale = True
+
+        if not ttl_expired and not heartbeat_stale:
+            conn.rollback()
+            return False, f"claim held by {old.agent_id} is still active and fresh"
+
+        reason = "ttl_expired" if ttl_expired else "heartbeat_stale"
+
+        # Expire old claim
+        conn.execute(
+            "UPDATE claims SET state = 'expired' WHERE claim_id = ?",
+            (old.claim_id,),
+        )
+
+        # Insert new claim
+        conn.execute(
+            "INSERT INTO claims "
+            "(claim_id, agent_id, path, resource_type, intent, state, ttl_s, "
+            "created_at, expires_at, released_at, reason, episode_id, priority, effective_priority) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (new_claim.claim_id, new_claim.agent_id, new_claim.path,
+             new_claim.resource_type.value, new_claim.intent.value,
+             new_claim.state.value, new_claim.ttl_s, new_claim.created_at,
+             new_claim.expires_at, new_claim.released_at, new_claim.reason,
+             new_claim.episode_id, new_claim.priority, new_claim.effective_priority),
+        )
+
+        # Remove waiter entries for stealer on this resource
+        conn.execute(
+            "DELETE FROM waiters WHERE waiter_agent_id = ? AND resource_path = ?",
+            (stealer_agent_id, new_claim.path),
+        )
+
+        conn.commit()
+        return True, reason
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()

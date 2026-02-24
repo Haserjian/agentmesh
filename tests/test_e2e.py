@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agentmesh import db
@@ -121,6 +122,33 @@ def test_gc_preserves_recent(tmp_data_dir: Path) -> None:
     assert removed == 0
     events = read_events(tmp_data_dir)
     assert len(events) == 3
+
+
+def test_gc_keeps_event_ids_unique_for_future_appends(tmp_data_dir: Path) -> None:
+    """After GC trims old head events, future appends should not duplicate event_id."""
+    for i in range(20):
+        append_event(EventKind.HEARTBEAT, agent_id="a1", payload={"i": i}, data_dir=tmp_data_dir)
+
+    path = tmp_data_dir / "events.jsonl"
+    lines = path.read_text().splitlines()
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=96)).isoformat()
+    rewritten: list[str] = []
+    for i, line in enumerate(lines):
+        data = json.loads(line)
+        if i < 9:
+            data["ts"] = old_ts
+        rewritten.append(json.dumps(data, separators=(",", ":")))
+    path.write_text("\n".join(rewritten) + "\n")
+
+    removed = gc_events(max_age_hours=72, data_dir=tmp_data_dir)
+    assert removed == 9
+
+    before_ids = [e.event_id for e in read_events(tmp_data_dir)]
+    new_evt = append_event(EventKind.MSG, agent_id="a1", data_dir=tmp_data_dir)
+    after_ids = [e.event_id for e in read_events(tmp_data_dir)]
+
+    assert new_evt.event_id not in before_ids
+    assert len(after_ids) == len(set(after_ids))
 
 
 def test_deregister_releases_claims(tmp_data_dir: Path) -> None:

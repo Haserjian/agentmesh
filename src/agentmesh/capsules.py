@@ -90,9 +90,15 @@ def build_capsule(
     agent_id: str,
     task_desc: str = "",
     cwd: str | None = None,
+    episode_id: str | None = None,
     data_dir: Path | None = None,
 ) -> Capsule:
-    """Build a context capsule from git state + mesh state."""
+    """Build a context capsule from git state + mesh state. Auto-tags with current episode."""
+    # Auto-tag with current episode
+    if episode_id is None:
+        from .episodes import get_current_episode
+        episode_id = get_current_episode(data_dir)
+
     work_dir = cwd or "."
 
     # Git state
@@ -132,6 +138,7 @@ def build_capsule(
         next_actions=[],
         sbar=sbar,
         created_at=now,
+        episode_id=episode_id,
     )
 
     # Save to DB
@@ -145,6 +152,7 @@ def build_capsule(
         "agent_id": agent_id,
         "created_at": now,
         "task_desc": task_desc,
+        "episode_id": episode_id,
         "git": {
             "branch": branch,
             "sha": sha,
