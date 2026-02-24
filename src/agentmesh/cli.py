@@ -1103,7 +1103,12 @@ def mcp_serve() -> None:
     try:
         from .mcp_server import main as mcp_main
     except ImportError:
-        console.print("MCP support not installed. Run: pip install 'agentmesh-core[mcp]'", style="red")
+        # Rich markup treats [mcp] as a tag unless markup is disabled.
+        console.print(
+            "MCP support not installed. Run: pip install 'agentmesh-core[mcp]'",
+            style="red",
+            markup=False,
+        )
         raise typer.Exit(1)
     mcp_main()
 
