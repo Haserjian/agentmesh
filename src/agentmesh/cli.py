@@ -426,6 +426,64 @@ def episode_end() -> None:
     console.print(f"Episode [bold]{ep_id}[/bold] ended")
 
 
+# -- Wait/Steal commands --
+
+@app.command()
+def wait(
+    resource: str = typer.Argument(..., help="Resource to wait on (paths, PORT:N, etc.)"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a"),
+    priority: int = typer.Option(5, "--priority", "-p", help="Wait priority (1-10)"),
+    reason: str = typer.Option("", "--reason", "-r"),
+) -> None:
+    """Register a wait on a claimed resource. Triggers priority inheritance on the holder."""
+    _ensure_db()
+    from .waiters import register_wait
+    from .claims import parse_resource_string
+    agent_id = agent or _auto_agent_id()
+    rt, norm = parse_resource_string(resource)
+    w = register_wait(
+        agent_id, norm, priority=priority, reason=reason,
+        resource_type=rt, data_dir=_get_data_dir(),
+    )
+    events.append_event(
+        EventKind.WAIT, agent_id=agent_id,
+        payload={"resource": norm, "resource_type": rt.value, "priority": priority, "reason": reason},
+        data_dir=_get_data_dir(),
+    )
+    console.print(f"Wait [bold]{w.waiter_id}[/bold] registered on {norm} (priority={priority})")
+
+
+@app.command()
+def steal(
+    resource: str = typer.Argument(..., help="Resource to steal"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a"),
+    reason: str = typer.Option("", "--reason", "-r"),
+    priority: int = typer.Option(5, "--priority", "-p"),
+    stale_threshold: int = typer.Option(300, "--stale-threshold", help="Stale threshold in seconds"),
+) -> None:
+    """Attempt to steal a resource claim (only if TTL expired or holder heartbeat stale)."""
+    _ensure_db()
+    from .waiters import steal_resource
+    from .claims import parse_resource_string
+    agent_id = agent or _auto_agent_id()
+    rt, norm = parse_resource_string(resource)
+    ok, msg_text = steal_resource(
+        agent_id, norm, reason=reason, priority=priority,
+        resource_type=rt, stale_threshold_s=stale_threshold,
+        data_dir=_get_data_dir(),
+    )
+    if ok:
+        events.append_event(
+            EventKind.STEAL, agent_id=agent_id,
+            payload={"resource": norm, "resource_type": rt.value, "reason": msg_text},
+            data_dir=_get_data_dir(),
+        )
+        console.print(f"Stole [bold]{norm}[/bold] ({msg_text})")
+    else:
+        console.print(f"Steal failed: {msg_text}", style="red")
+        raise typer.Exit(1)
+
+
 # -- Weave commands --
 
 weave_app = typer.Typer(help="Provenance weave commands.")
