@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import sqlite3
 
 import pytest
 
 from agentmesh import db
-from agentmesh.models import Agent, AgentKind, AgentStatus, Claim, ClaimState, ClaimIntent, _now
+from agentmesh.models import Agent, AgentKind, AgentStatus, Claim, ClaimState, ClaimIntent, Message, Severity, _now
 
 
 def test_init_db_creates_tables(tmp_data_dir: Path) -> None:
@@ -85,3 +86,35 @@ def test_foreign_key_enforcement(tmp_data_dir: Path) -> None:
     )
     with pytest.raises(sqlite3.IntegrityError):
         db.create_claim(claim, tmp_data_dir)
+
+
+def test_retry_on_busy_succeeds_after_transient() -> None:
+    """Retry decorator should succeed when lock clears on second attempt."""
+    call_count = 0
+
+    @db._retry_on_busy
+    def flaky_fn():
+        nonlocal call_count
+        call_count += 1
+        if call_count < 2:
+            raise sqlite3.OperationalError("database is locked")
+        return "ok"
+
+    result = flaky_fn()
+    assert result == "ok"
+    assert call_count == 2
+
+
+def test_retry_on_busy_gives_up() -> None:
+    """After max retries, the OperationalError should propagate."""
+    call_count = 0
+
+    @db._retry_on_busy
+    def always_locked():
+        nonlocal call_count
+        call_count += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        always_locked()
+    assert call_count == db._BUSY_MAX_RETRIES + 1

@@ -2,15 +2,46 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import random
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
 from .models import Agent, AgentStatus, Claim, ClaimIntent, ClaimState, Message, ResourceType, Severity, Capsule
 
 _DEFAULT_DIR = Path.home() / ".agentmesh"
+
+_BUSY_MAX_RETRIES = 3
+_BUSY_BASE_DELAY_S = 0.1
+_BUSY_JITTER_MAX_S = 0.1
+
+
+def _retry_on_busy(fn):
+    """Retry on SQLITE_BUSY with exponential backoff + jitter.
+
+    Catches sqlite3.OperationalError containing 'locked' and retries
+    up to _BUSY_MAX_RETRIES times with delays of 100ms, 200ms, 400ms
+    plus random 0-100ms jitter.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        last_err = None
+        for attempt in range(_BUSY_MAX_RETRIES + 1):
+            try:
+                return fn(*args, **kwargs)
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower():
+                    raise
+                last_err = e
+                if attempt < _BUSY_MAX_RETRIES:
+                    delay = _BUSY_BASE_DELAY_S * (2 ** attempt) + random.uniform(0, _BUSY_JITTER_MAX_S)
+                    time.sleep(delay)
+        raise last_err  # type: ignore[misc]
+    return wrapper
 
 _SCHEMA = """\
 PRAGMA journal_mode=WAL;
@@ -243,6 +274,7 @@ def check_collision(path: str, resource_type: ResourceType = ResourceType.FILE,
         conn.close()
 
 
+@_retry_on_busy
 def check_and_claim(claim: Claim, force: bool = False,
                     data_dir: Path | None = None) -> tuple[bool, list[Claim]]:
     """Atomic collision check + claim. Returns (success, conflicting_claims)."""
@@ -304,6 +336,7 @@ def check_and_claim(claim: Claim, force: bool = False,
         conn.close()
 
 
+@_retry_on_busy
 def release_claim(agent_id: str, path: str | None = None,
                   resource_type: ResourceType = ResourceType.FILE,
                   release_all: bool = False,
@@ -370,6 +403,7 @@ def expire_stale_claims(data_dir: Path | None = None) -> int:
 
 # -- Message CRUD --
 
+@_retry_on_busy
 def post_message(msg: Message, data_dir: Path | None = None) -> None:
     conn = get_connection(data_dir)
     try:
@@ -434,6 +468,7 @@ def mark_read(msg_id: str, agent_id: str, data_dir: Path | None = None) -> None:
 
 # -- Capsule CRUD --
 
+@_retry_on_busy
 def save_capsule(capsule: Capsule, data_dir: Path | None = None) -> None:
     conn = get_connection(data_dir)
     try:
