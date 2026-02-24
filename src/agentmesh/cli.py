@@ -550,8 +550,6 @@ def commit_cmd(
         console.print("Nothing staged to commit", style="red")
         raise typer.Exit(1)
 
-    patch_hash = gitbridge.compute_patch_hash(gitbridge.get_staged_diff(cwd))
-
     if run_tests:
         console.print(f"Running tests: {run_tests}")
         passed, summary = gitbridge.run_tests(run_tests, cwd=cwd)
@@ -559,6 +557,11 @@ def commit_cmd(
             console.print(f"Tests failed, aborting commit:\n{summary}", style="red")
             raise typer.Exit(1)
         console.print("[green]Tests passed[/green]")
+        # Recompute after tests (tests may have re-staged files)
+        staged_files = gitbridge.get_staged_files(cwd)
+
+    # Compute patch hash from final staged state (after any test mutations)
+    patch_hash = gitbridge.compute_patch_hash(gitbridge.get_staged_diff(cwd))
 
     # Build trailer
     trailer = ""
@@ -572,17 +575,20 @@ def commit_cmd(
         console.print(f"git commit failed: {err}", style="red")
         raise typer.Exit(1)
 
-    # Weave event
+    # Capsule if requested (before weave, so we can link capsule_id)
+    capsule_id = ""
+    if capsule:
+        cap = capsules.build_capsule(agent_id, task_desc=message, cwd=cwd, data_dir=_get_data_dir())
+        capsule_id = cap.capsule_id
+
+    # Weave event (linked to capsule if created)
     evt = weaver.append_weave(
+        capsule_id=capsule_id,
         git_commit_sha=sha,
         git_patch_hash=patch_hash,
         affected_symbols=staged_files,
         data_dir=_get_data_dir(),
     )
-
-    # Capsule if requested
-    if capsule:
-        capsules.build_capsule(agent_id, task_desc=message, cwd=cwd, data_dir=_get_data_dir())
 
     # Event log
     events.append_event(

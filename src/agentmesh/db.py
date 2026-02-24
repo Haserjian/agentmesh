@@ -984,18 +984,28 @@ def get_last_weave_hash(data_dir: Path | None = None) -> str:
 def list_weave_events(
     data_dir: Path | None = None,
     episode_id: str | None = None,
-    limit: int = 100,
+    limit: int = 0,
 ) -> list[WeaveEvent]:
+    """List weave events. limit=0 means no limit (all events)."""
     conn = get_connection(data_dir)
     try:
-        if episode_id:
+        if episode_id and limit:
             rows = conn.execute(
                 "SELECT * FROM weave_events WHERE episode_id = ? ORDER BY created_at LIMIT ?",
                 (episode_id, limit),
             ).fetchall()
-        else:
+        elif episode_id:
+            rows = conn.execute(
+                "SELECT * FROM weave_events WHERE episode_id = ? ORDER BY created_at",
+                (episode_id,),
+            ).fetchall()
+        elif limit:
             rows = conn.execute(
                 "SELECT * FROM weave_events ORDER BY created_at LIMIT ?", (limit,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM weave_events ORDER BY created_at"
             ).fetchall()
         return [_row_to_weave_event(r) for r in rows]
     finally:

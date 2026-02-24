@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
+from typer.testing import CliRunner
+
 from agentmesh import db, events
+from agentmesh.cli import app
 from agentmesh.episodes import start_episode, get_current_episode
 from agentmesh.gitbridge import get_staged_diff, get_staged_files, compute_patch_hash, git_commit
 from agentmesh.models import EventKind
-from agentmesh.weaver import append_weave, export_weave_md
+from agentmesh.weaver import append_weave, export_weave_md, verify_weave
+
+runner = CliRunner()
 
 
 def _init_repo(tmp_path: Path) -> Path:
@@ -134,3 +140,88 @@ def test_weave_export_md_with_file_table(tmp_data_dir: Path) -> None:
     assert "| `src/auth.py` | abc12345, def67890 |" in md
     assert "| `src/main.py` | abc12345 |" in md
     assert "| `tests/test_auth.py` | def67890 |" in md
+
+
+# -- CLI integration tests --
+
+
+def test_cli_commit_creates_weave_and_event(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
+    """End-to-end: agentmesh commit via CLI creates weave event + COMMIT event."""
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "hello.py").write_text("print('hello')\n")
+    subprocess.run(["git", "add", "hello.py"], cwd=str(repo), capture_output=True, check=True)
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "cli_test_agent")
+
+    result = runner.invoke(app, ["commit", "-m", "add hello", "--no-episode-trailer"])
+    assert result.exit_code == 0, result.output
+    assert "Committed" in result.output
+    assert "hello.py" in result.output
+
+    # Verify weave event was created
+    evts = db.list_weave_events(tmp_data_dir)
+    assert len(evts) == 1
+    assert evts[0].git_commit_sha
+    assert "hello.py" in evts[0].affected_symbols
+
+
+def test_cli_commit_not_git_repo(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
+    """CLI exits 1 when not in a git repo."""
+    non_repo = tmp_path / "not-git"
+    non_repo.mkdir()
+    monkeypatch.chdir(non_repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+
+    result = runner.invoke(app, ["commit", "-m", "nope"])
+    assert result.exit_code == 1
+    assert "Not a git repository" in result.output
+
+
+def test_cli_commit_nothing_staged(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
+    """CLI exits 1 when nothing is staged."""
+    repo = _init_repo(tmp_path / "repo")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+
+    result = runner.invoke(app, ["commit", "-m", "empty"])
+    assert result.exit_code == 1
+    assert "Nothing staged" in result.output
+
+
+def test_cli_commit_capsule_links_to_weave(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
+    """--capsule should produce a weave event with capsule_id set."""
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "linked.py").write_text("z = 99\n")
+    subprocess.run(["git", "add", "linked.py"], cwd=str(repo), capture_output=True, check=True)
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "cap_agent")
+
+    result = runner.invoke(app, ["commit", "-m", "with capsule", "--capsule", "--no-episode-trailer"])
+    assert result.exit_code == 0, result.output
+
+    evts = db.list_weave_events(tmp_data_dir)
+    assert len(evts) == 1
+    assert evts[0].capsule_id.startswith("cap_")
+
+
+def test_weave_verify_beyond_100_events(tmp_data_dir: Path) -> None:
+    """Weave verify must check ALL events, not just first 100."""
+    # Create 105 valid events
+    for i in range(105):
+        append_weave(
+            git_commit_sha=f"sha_{i:04d}",
+            affected_symbols=[f"file_{i}.py"],
+            data_dir=tmp_data_dir,
+        )
+
+    # All 105 should be returned
+    all_evts = db.list_weave_events(tmp_data_dir)
+    assert len(all_evts) == 105
+
+    # Verify passes on full chain
+    valid, err = verify_weave(tmp_data_dir)
+    assert valid, err
