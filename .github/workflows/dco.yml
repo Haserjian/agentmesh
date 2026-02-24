@@ -1,0 +1,20 @@
+name: DCO
+on: [pull_request]
+jobs:
+  dco:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          fail=0
+          for sha in $(git rev-list "${base}..${head}"); do
+            if ! git show -s --format=%B "$sha" | grep -iq '^Signed-off-by: '; then
+              echo "::error::Commit $sha missing Signed-off-by trailer"
+              fail=1
+            fi
+          done
+          exit $fail
