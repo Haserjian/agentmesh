@@ -822,6 +822,35 @@ def _row_to_waiter(row: sqlite3.Row) -> Waiter:
     )
 
 
+def _row_to_capsule_from_dict(d: dict) -> Capsule:
+    """Build Capsule from a plain dict (e.g. JSONL import)."""
+    return Capsule(
+        capsule_id=d["capsule_id"], agent_id=d["agent_id"],
+        task_desc=d.get("task_desc", ""), git_branch=d.get("git_branch", ""),
+        git_sha=d.get("git_sha", ""), diff_stat=d.get("diff_stat", ""),
+        files_changed=json.loads(d["files_changed"]) if isinstance(d.get("files_changed"), str) else d.get("files_changed", []),
+        test_status=d.get("test_status", "unknown"), test_summary=d.get("test_summary", ""),
+        what_changed=d.get("what_changed", ""), what_remains=d.get("what_remains", ""),
+        risks=json.loads(d["risks"]) if isinstance(d.get("risks"), str) else d.get("risks", []),
+        next_actions=json.loads(d["next_actions"]) if isinstance(d.get("next_actions"), str) else d.get("next_actions", []),
+        sbar=json.loads(d["sbar"]) if isinstance(d.get("sbar"), str) else d.get("sbar", {}),
+        created_at=d.get("created_at", ""),
+        episode_id=d.get("episode_id", ""),
+    )
+
+
+def _row_to_message_from_dict(d: dict) -> Message:
+    """Build Message from a plain dict (e.g. JSONL import)."""
+    return Message(
+        msg_id=d["msg_id"], from_agent=d["from_agent"],
+        to_agent=d.get("to_agent"), channel=d.get("channel", "general"),
+        severity=d.get("severity", "FYI"), body=d.get("body", ""),
+        read_by=json.loads(d["read_by"]) if isinstance(d.get("read_by"), str) else d.get("read_by", []),
+        created_at=d.get("created_at", ""),
+        episode_id=d.get("episode_id", ""),
+    )
+
+
 # -- Episode CRUD --
 
 def create_episode(

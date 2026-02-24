@@ -426,6 +426,47 @@ def episode_end() -> None:
     console.print(f"Episode [bold]{ep_id}[/bold] ended")
 
 
+@episode_app.command(name="export")
+def episode_export_cmd(
+    episode_id: str = typer.Argument(..., help="Episode ID to export"),
+    out: Optional[str] = typer.Option(None, "--out", "-o", help="Output path"),
+) -> None:
+    """Export an episode as a .meshpack bundle."""
+    _ensure_db()
+    from .passport import export_episode
+    out_path = Path(out) if out else None
+    result = export_episode(episode_id, output_path=out_path, data_dir=_get_data_dir())
+    console.print(f"Exported to [bold]{result}[/bold]")
+
+
+@episode_app.command(name="verify")
+def episode_verify_cmd(
+    pack_path: str = typer.Argument(..., help="Path to .meshpack file"),
+) -> None:
+    """Verify a .meshpack bundle signature."""
+    _ensure_db()
+    from .passport import verify_meshpack
+    valid, manifest = verify_meshpack(Path(pack_path))
+    if valid:
+        console.print("[green]Signature valid[/green]")
+        console.print(f"  episode={manifest['episode_id']}  counts={manifest['counts']}")
+    else:
+        console.print("[red]Signature INVALID[/red]")
+        raise typer.Exit(1)
+
+
+@episode_app.command(name="import")
+def episode_import_cmd(
+    pack_path: str = typer.Argument(..., help="Path to .meshpack file"),
+    namespace: str = typer.Option("", "--namespace", "-n", help="Namespace prefix for imported episode"),
+) -> None:
+    """Import a .meshpack bundle into the local DB."""
+    _ensure_db()
+    from .passport import import_meshpack
+    counts = import_meshpack(Path(pack_path), namespace=namespace, data_dir=_get_data_dir())
+    console.print(f"Imported: {counts}")
+
+
 # -- Wait/Steal commands --
 
 @app.command()
