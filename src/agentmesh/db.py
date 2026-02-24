@@ -171,6 +171,29 @@ CREATE TABLE IF NOT EXISTS attempts (
     outcome TEXT NOT NULL DEFAULT '',
     error_summary TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS spawns (
+    spawn_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL DEFAULT '',
+    agent_id TEXT NOT NULL,
+    pid INTEGER NOT NULL,
+    worktree_path TEXT NOT NULL DEFAULT '',
+    branch TEXT NOT NULL DEFAULT '',
+    episode_id TEXT NOT NULL DEFAULT '',
+    context_hash TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL DEFAULT '',
+    output_path TEXT NOT NULL DEFAULT '',
+    repo_cwd TEXT NOT NULL DEFAULT '',
+    timeout_s INTEGER NOT NULL DEFAULT 0,
+    pid_started_at REAL NOT NULL DEFAULT 0.0,
+    backend TEXT NOT NULL DEFAULT 'claude_code',
+    backend_version TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_spawns_active ON spawns(ended_at, started_at) WHERE ended_at = '';
+CREATE INDEX IF NOT EXISTS idx_spawns_task ON spawns(task_id);
 """
 
 
@@ -212,6 +235,7 @@ def init_db(data_dir: Path | None = None) -> None:
     migrate_add_episode_id_columns(data_dir)
     migrate_claims_add_priority(data_dir)
     migrate_add_tasks_tables(data_dir)
+    migrate_add_spawns_table(data_dir)
 
 
 def migrate_claims_add_resource_type(data_dir: Path | None = None) -> None:
@@ -416,6 +440,193 @@ def migrate_add_tasks_tables(data_dir: Path | None = None) -> None:
                 "error_summary TEXT NOT NULL DEFAULT ''"
                 ");"
             )
+    finally:
+        conn.close()
+
+
+def migrate_add_spawns_table(data_dir: Path | None = None) -> None:
+    """Create spawns table if missing, add new columns if absent, ensure indexes."""
+    conn = get_connection(data_dir)
+    try:
+        if not _table_exists(conn, "spawns"):
+            conn.executescript(
+                "CREATE TABLE IF NOT EXISTS spawns ("
+                "spawn_id TEXT PRIMARY KEY,"
+                "task_id TEXT NOT NULL,"
+                "attempt_id TEXT NOT NULL DEFAULT '',"
+                "agent_id TEXT NOT NULL,"
+                "pid INTEGER NOT NULL,"
+                "worktree_path TEXT NOT NULL DEFAULT '',"
+                "branch TEXT NOT NULL DEFAULT '',"
+                "episode_id TEXT NOT NULL DEFAULT '',"
+                "context_hash TEXT NOT NULL DEFAULT '',"
+                "started_at TEXT NOT NULL,"
+                "ended_at TEXT NOT NULL DEFAULT '',"
+                "outcome TEXT NOT NULL DEFAULT '',"
+                "output_path TEXT NOT NULL DEFAULT '',"
+                "repo_cwd TEXT NOT NULL DEFAULT '',"
+                "timeout_s INTEGER NOT NULL DEFAULT 0,"
+                "pid_started_at REAL NOT NULL DEFAULT 0.0,"
+                "backend TEXT NOT NULL DEFAULT 'claude_code',"
+                "backend_version TEXT NOT NULL DEFAULT ''"
+                ");"
+            )
+        else:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(spawns)").fetchall()]
+            if "timeout_s" not in cols:
+                conn.execute(
+                    "ALTER TABLE spawns ADD COLUMN timeout_s INTEGER NOT NULL DEFAULT 0"
+                )
+                conn.commit()
+            if "pid_started_at" not in cols:
+                conn.execute(
+                    "ALTER TABLE spawns ADD COLUMN pid_started_at REAL NOT NULL DEFAULT 0.0"
+                )
+                conn.commit()
+            if "backend" not in cols:
+                conn.execute(
+                    "ALTER TABLE spawns ADD COLUMN backend TEXT NOT NULL DEFAULT 'claude_code'"
+                )
+                conn.commit()
+            if "backend_version" not in cols:
+                conn.execute(
+                    "ALTER TABLE spawns ADD COLUMN backend_version TEXT NOT NULL DEFAULT ''"
+                )
+                conn.commit()
+        # Indexes for watchdog scan performance
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_spawns_active "
+            "ON spawns(ended_at, started_at) WHERE ended_at = ''"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_spawns_task "
+            "ON spawns(task_id)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# -- Spawn CRUD --
+
+@_retry_on_busy
+def create_spawn(
+    spawn_id: str,
+    task_id: str,
+    attempt_id: str,
+    agent_id: str,
+    pid: int,
+    worktree_path: str,
+    branch: str,
+    episode_id: str,
+    context_hash: str,
+    started_at: str,
+    output_path: str = "",
+    repo_cwd: str = "",
+    timeout_s: int = 0,
+    pid_started_at: float = 0.0,
+    backend: str = "claude_code",
+    backend_version: str = "",
+    data_dir: Path | None = None,
+) -> None:
+    conn = get_connection(data_dir)
+    try:
+        conn.execute(
+            "INSERT INTO spawns "
+            "(spawn_id, task_id, attempt_id, agent_id, pid, worktree_path, "
+            "branch, episode_id, context_hash, started_at, ended_at, outcome, "
+            "output_path, repo_cwd, timeout_s, pid_started_at, backend, backend_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?)",
+            (spawn_id, task_id, attempt_id, agent_id, pid, worktree_path,
+             branch, episode_id, context_hash, started_at, output_path,
+             repo_cwd, timeout_s, pid_started_at, backend, backend_version),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_spawn(spawn_id: str, data_dir: Path | None = None) -> dict[str, Any] | None:
+    conn = get_connection(data_dir)
+    try:
+        row = conn.execute(
+            "SELECT * FROM spawns WHERE spawn_id = ?", (spawn_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+    finally:
+        conn.close()
+
+
+@_retry_on_busy
+def update_spawn(
+    spawn_id: str,
+    data_dir: Path | None = None,
+    **kwargs: Any,
+) -> bool:
+    allowed = {"ended_at", "outcome"}
+    sets = []
+    params: list[Any] = []
+    for key, val in kwargs.items():
+        if key not in allowed:
+            continue
+        sets.append(f"{key} = ?")
+        params.append(val)
+    if not sets:
+        return False
+    params.append(spawn_id)
+    conn = get_connection(data_dir)
+    try:
+        cur = conn.execute(
+            f"UPDATE spawns SET {', '.join(sets)} WHERE spawn_id = ?", params,
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+@_retry_on_busy
+def finalize_spawn(
+    spawn_id: str,
+    ended_at: str,
+    outcome: str,
+    data_dir: Path | None = None,
+) -> bool:
+    """Atomic compare-and-swap: set ended_at+outcome only if ended_at is still empty.
+
+    Returns True if this caller claimed the finalization, False if someone
+    else already finalized (race-safe).
+    """
+    conn = get_connection(data_dir)
+    try:
+        cur = conn.execute(
+            "UPDATE spawns SET ended_at = ?, outcome = ? "
+            "WHERE spawn_id = ? AND ended_at = ''",
+            (ended_at, outcome, spawn_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def list_spawns_db(
+    active_only: bool = False,
+    data_dir: Path | None = None,
+) -> list[dict[str, Any]]:
+    conn = get_connection(data_dir)
+    try:
+        if active_only:
+            rows = conn.execute(
+                "SELECT * FROM spawns WHERE ended_at = '' ORDER BY started_at"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM spawns ORDER BY started_at"
+            ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 

@@ -51,6 +51,11 @@ def test_init_writes_scaffold_files(tmp_path: Path) -> None:
 
     policy = json.loads(policy_path.read_text())
     assert policy["claims"]["ttl_seconds"] == 900
+    assert policy["assay"]["emit_on_commit"] is False
+    assert policy["assay"]["required"] is False
+    assert "public_private" in policy
+    assert "public_path_globs" in policy["public_private"]
+    assert "private_path_globs" in policy["public_private"]
     assert policy["task_finish"]["run_tests"] == "pytest -q tests/unit"
     assert policy["task_finish"]["capsule"] is False
 

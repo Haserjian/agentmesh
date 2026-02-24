@@ -7,3 +7,11 @@ dist/
 build/
 .pytest_cache/
 .mypy_cache/
+
+# Generated alpha/canary artifacts (keep private unless sanitized)
+alpha-gate-report.json
+ci-result.json
+ci-witness.log
+tmp_alpha_gate_data/
+.agentmesh/runs/
+docs/alpha-gate-report.json
