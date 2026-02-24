@@ -561,9 +561,9 @@ def doctor_cmd() -> None:
     data_dir = _get_data_dir()
     try:
         db.init_db(data_dir)
-        ep = db.get_current_episode(data_dir)
-        if ep:
-            ok(f"Active episode: {ep.episode_id}")
+        ep_id = episodes.get_current_episode(data_dir)
+        if ep_id:
+            ok(f"Active episode: {ep_id}")
         else:
             warn("No active episode", "agentmesh episode start --title 'my task'")
     except Exception:
