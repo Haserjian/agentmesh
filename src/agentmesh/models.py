@@ -61,6 +61,7 @@ class EventKind(str, enum.Enum):
     BUNDLE = "BUNDLE"
     STATUS_CHANGE = "STATUS_CHANGE"
     GC = "GC"
+    SOFT_CONFLICT = "SOFT_CONFLICT"
 
 
 def _now() -> str:
