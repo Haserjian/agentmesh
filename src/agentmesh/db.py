@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from .models import (
-    Agent, AgentStatus, Capsule, Claim, ClaimIntent, ClaimState,
-    Episode, Message, ResourceType, Severity, Waiter, WeaveEvent,
+    Agent, AgentStatus, Attempt, Capsule, Claim, ClaimIntent, ClaimState,
+    Episode, Message, ResourceType, Severity, Task, TaskState, Waiter, WeaveEvent,
 )
 
 _DEFAULT_DIR = Path.home() / ".agentmesh"
@@ -143,6 +143,34 @@ CREATE TABLE IF NOT EXISTS waiters (
     reason TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'planned'
+        CHECK(state IN ('planned','assigned','running','pr_open',
+                        'ci_pass','review_pass','merged','aborted')),
+    assigned_agent_id TEXT NOT NULL DEFAULT '',
+    episode_id TEXT NOT NULL DEFAULT '',
+    branch TEXT NOT NULL DEFAULT '',
+    pr_url TEXT NOT NULL DEFAULT '',
+    parent_task_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    meta TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS attempts (
+    attempt_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    agent_id TEXT NOT NULL,
+    attempt_number INTEGER NOT NULL DEFAULT 1,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL DEFAULT '',
+    error_summary TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -183,6 +211,7 @@ def init_db(data_dir: Path | None = None) -> None:
     ensure_claims_active_index(data_dir)
     migrate_add_episode_id_columns(data_dir)
     migrate_claims_add_priority(data_dir)
+    migrate_add_tasks_tables(data_dir)
 
 
 def migrate_claims_add_resource_type(data_dir: Path | None = None) -> None:
@@ -347,6 +376,205 @@ def migrate_claims_add_priority(data_dir: Path | None = None) -> None:
                 "ALTER TABLE claims ADD COLUMN effective_priority INTEGER NOT NULL DEFAULT 5"
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def migrate_add_tasks_tables(data_dir: Path | None = None) -> None:
+    """Create tasks + attempts tables if missing."""
+    conn = get_connection(data_dir)
+    try:
+        if not _table_exists(conn, "tasks"):
+            conn.executescript(
+                "CREATE TABLE IF NOT EXISTS tasks ("
+                "task_id TEXT PRIMARY KEY,"
+                "title TEXT NOT NULL DEFAULT '',"
+                "description TEXT NOT NULL DEFAULT '',"
+                "state TEXT NOT NULL DEFAULT 'planned'"
+                "  CHECK(state IN ('planned','assigned','running','pr_open',"
+                "                  'ci_pass','review_pass','merged','aborted')),"
+                "assigned_agent_id TEXT NOT NULL DEFAULT '',"
+                "episode_id TEXT NOT NULL DEFAULT '',"
+                "branch TEXT NOT NULL DEFAULT '',"
+                "pr_url TEXT NOT NULL DEFAULT '',"
+                "parent_task_id TEXT NOT NULL DEFAULT '',"
+                "created_at TEXT NOT NULL,"
+                "updated_at TEXT NOT NULL,"
+                "meta TEXT NOT NULL DEFAULT '{}'"
+                ");"
+            )
+        if not _table_exists(conn, "attempts"):
+            conn.executescript(
+                "CREATE TABLE IF NOT EXISTS attempts ("
+                "attempt_id TEXT PRIMARY KEY,"
+                "task_id TEXT NOT NULL REFERENCES tasks(task_id),"
+                "agent_id TEXT NOT NULL,"
+                "attempt_number INTEGER NOT NULL DEFAULT 1,"
+                "started_at TEXT NOT NULL,"
+                "ended_at TEXT NOT NULL DEFAULT '',"
+                "outcome TEXT NOT NULL DEFAULT '',"
+                "error_summary TEXT NOT NULL DEFAULT ''"
+                ");"
+            )
+    finally:
+        conn.close()
+
+
+# -- Task CRUD --
+
+@_retry_on_busy
+def create_task(task: Task, data_dir: Path | None = None) -> None:
+    conn = get_connection(data_dir)
+    try:
+        conn.execute(
+            "INSERT INTO tasks "
+            "(task_id, title, description, state, assigned_agent_id, episode_id, "
+            "branch, pr_url, parent_task_id, created_at, updated_at, meta) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (task.task_id, task.title, task.description, task.state.value,
+             task.assigned_agent_id, task.episode_id, task.branch, task.pr_url,
+             task.parent_task_id, task.created_at, task.updated_at,
+             json.dumps(task.meta)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_task(task_id: str, data_dir: Path | None = None) -> Task | None:
+    conn = get_connection(data_dir)
+    try:
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_task(row)
+    finally:
+        conn.close()
+
+
+@_retry_on_busy
+def update_task(
+    task_id: str,
+    data_dir: Path | None = None,
+    **kwargs: Any,
+) -> bool:
+    """Update task fields. Returns True if row was updated."""
+    from .models import _now
+    allowed = {
+        "state", "assigned_agent_id", "episode_id", "branch",
+        "pr_url", "title", "description", "meta",
+    }
+    sets = []
+    params: list[Any] = []
+    for key, val in kwargs.items():
+        if key not in allowed:
+            continue
+        if key == "meta":
+            sets.append("meta = ?")
+            params.append(json.dumps(val))
+        elif key == "state":
+            sets.append("state = ?")
+            params.append(val.value if hasattr(val, "value") else val)
+        else:
+            sets.append(f"{key} = ?")
+            params.append(val)
+    if not sets:
+        return False
+    sets.append("updated_at = ?")
+    params.append(_now())
+    params.append(task_id)
+    conn = get_connection(data_dir)
+    try:
+        cur = conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} WHERE task_id = ?", params,
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def list_tasks(
+    data_dir: Path | None = None,
+    state: TaskState | None = None,
+    assigned_agent_id: str | None = None,
+    limit: int = 50,
+) -> list[Task]:
+    conn = get_connection(data_dir)
+    try:
+        q = "SELECT * FROM tasks"
+        params: list[Any] = []
+        conditions = []
+        if state:
+            conditions.append("state = ?")
+            params.append(state.value)
+        if assigned_agent_id:
+            conditions.append("assigned_agent_id = ?")
+            params.append(assigned_agent_id)
+        if conditions:
+            q += " WHERE " + " AND ".join(conditions)
+        q += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(q, params).fetchall()
+        return [_row_to_task(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# -- Attempt CRUD --
+
+@_retry_on_busy
+def create_attempt(attempt: Attempt, data_dir: Path | None = None) -> None:
+    conn = get_connection(data_dir)
+    try:
+        conn.execute(
+            "INSERT INTO attempts "
+            "(attempt_id, task_id, agent_id, attempt_number, started_at, "
+            "ended_at, outcome, error_summary) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (attempt.attempt_id, attempt.task_id, attempt.agent_id,
+             attempt.attempt_number, attempt.started_at, attempt.ended_at,
+             attempt.outcome, attempt.error_summary),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@_retry_on_busy
+def end_attempt(
+    attempt_id: str,
+    outcome: str,
+    error_summary: str = "",
+    data_dir: Path | None = None,
+) -> bool:
+    from .models import _now
+    conn = get_connection(data_dir)
+    try:
+        cur = conn.execute(
+            "UPDATE attempts SET ended_at = ?, outcome = ?, error_summary = ? "
+            "WHERE attempt_id = ?",
+            (_now(), outcome, error_summary, attempt_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def list_attempts(
+    task_id: str,
+    data_dir: Path | None = None,
+) -> list[Attempt]:
+    conn = get_connection(data_dir)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM attempts WHERE task_id = ? ORDER BY attempt_number",
+            (task_id,),
+        ).fetchall()
+        return [_row_to_attempt(r) for r in rows]
     finally:
         conn.close()
 
@@ -834,6 +1062,36 @@ def _row_to_waiter(row: sqlite3.Row) -> Waiter:
         priority=row["priority"],
         reason=row["reason"],
         created_at=row["created_at"],
+    )
+
+
+def _row_to_task(row: sqlite3.Row) -> Task:
+    return Task(
+        task_id=row["task_id"],
+        title=row["title"],
+        description=row["description"],
+        state=row["state"],
+        assigned_agent_id=row["assigned_agent_id"],
+        episode_id=row["episode_id"],
+        branch=row["branch"],
+        pr_url=row["pr_url"],
+        parent_task_id=row["parent_task_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        meta=json.loads(row["meta"]),
+    )
+
+
+def _row_to_attempt(row: sqlite3.Row) -> Attempt:
+    return Attempt(
+        attempt_id=row["attempt_id"],
+        task_id=row["task_id"],
+        agent_id=row["agent_id"],
+        attempt_number=row["attempt_number"],
+        started_at=row["started_at"],
+        ended_at=row["ended_at"],
+        outcome=row["outcome"],
+        error_summary=row["error_summary"],
     )
 
 

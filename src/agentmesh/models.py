@@ -50,6 +50,17 @@ class Severity(str, enum.Enum):
     HANDOFF = "HANDOFF"
 
 
+class TaskState(str, enum.Enum):
+    PLANNED = "planned"
+    ASSIGNED = "assigned"
+    RUNNING = "running"
+    PR_OPEN = "pr_open"
+    CI_PASS = "ci_pass"
+    REVIEW_PASS = "review_pass"
+    MERGED = "merged"
+    ABORTED = "aborted"
+
+
 class EventKind(str, enum.Enum):
     REGISTER = "REGISTER"
     DEREGISTER = "DEREGISTER"
@@ -67,6 +78,9 @@ class EventKind(str, enum.Enum):
     WAIT = "WAIT"
     STEAL = "STEAL"
     COMMIT = "COMMIT"
+    TASK_TRANSITION = "TASK_TRANSITION"
+    WORKER_SPAWN = "WORKER_SPAWN"
+    WORKER_DONE = "WORKER_DONE"
 
 
 def _now() -> str:
@@ -176,3 +190,29 @@ class Event(BaseModel, frozen=True):
     payload: dict[str, Any] = Field(default_factory=dict)
     prev_hash: str = ""
     event_hash: str = ""
+
+
+class Task(BaseModel, frozen=True):
+    task_id: str
+    title: str = ""
+    description: str = ""
+    state: TaskState = TaskState.PLANNED
+    assigned_agent_id: str = ""
+    episode_id: str = ""
+    branch: str = ""
+    pr_url: str = ""
+    parent_task_id: str = ""
+    created_at: str = Field(default_factory=_now)
+    updated_at: str = Field(default_factory=_now)
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class Attempt(BaseModel, frozen=True):
+    attempt_id: str
+    task_id: str
+    agent_id: str
+    attempt_number: int = 1
+    started_at: str = Field(default_factory=_now)
+    ended_at: str = ""
+    outcome: str = ""  # success, failure, aborted
+    error_summary: str = ""
