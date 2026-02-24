@@ -7,6 +7,98 @@ on:
     branches: [main]
 
 jobs:
+  public-private-guard:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Block private artifacts in PR diff
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          CHANGED="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          if [ -z "$CHANGED" ]; then
+            echo "No changed files."
+            exit 0
+          fi
+          echo "Changed files:"
+          echo "$CHANGED"
+          git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" | xargs -0 agentmesh classify --fail-on-private
+
+  release-check-preview:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run release-check preview on PR diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          base = os.environ["BASE_SHA"]
+          head = os.environ["HEAD_SHA"]
+          changed = subprocess.run(
+              ["git", "diff", "--name-only", base, head],
+              capture_output=True,
+              text=True,
+              check=True,
+          ).stdout.splitlines()
+
+          out_path = Path(".release-check.json")
+          if not changed:
+              payload = {"release_check": {"ok": True, "exit_code": 0, "skipped": "no_changed_files"}}
+              out_path.write_text(json.dumps(payload, indent=2) + "\n")
+              print(out_path.read_text())
+              sys.exit(0)
+
+          cmd = ["agentmesh", "release-check", "--json", *changed]
+          print("Running:", " ".join(cmd))
+          proc = subprocess.run(cmd, capture_output=True, text=True)
+          stdout = proc.stdout.strip()
+          stderr = proc.stderr.strip()
+          if stdout:
+              print(stdout)
+          if stderr:
+              print(stderr, file=sys.stderr)
+          out_path.write_text((stdout or "{}") + "\n")
+          sys.exit(proc.returncode)
+          PY
+
+      - name: Upload release-check preview artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-check-preview
+          path: .release-check.json
+
   test:
     runs-on: ubuntu-latest
     strategy:
