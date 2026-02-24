@@ -4,7 +4,16 @@
 
 set -euo pipefail
 
-AGENT_ID="${AGENTMESH_AGENT_ID:-claude_$(basename "${TTY:-notty}")_$$}"
+# Determine agent ID (session-stable: no PID)
+if [ -n "${AGENTMESH_AGENT_ID:-}" ]; then
+    AGENT_ID="$AGENTMESH_AGENT_ID"
+elif [ -n "${TTY:-}" ]; then
+    AGENT_ID="claude_$(basename "$TTY")"
+elif tty -s 2>/dev/null; then
+    AGENT_ID="claude_$(basename "$(tty)")"
+else
+    AGENT_ID="claude_notty"
+fi
 
 agentmesh heartbeat --agent "$AGENT_ID" --status busy >/dev/null 2>&1 || true
 exit 0

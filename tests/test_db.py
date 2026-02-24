@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import sqlite3
+
+import pytest
+
 from agentmesh import db
-from agentmesh.models import Agent, AgentKind, AgentStatus, _now
+from agentmesh.models import Agent, AgentKind, AgentStatus, Claim, ClaimState, ClaimIntent, _now
 
 
 def test_init_db_creates_tables(tmp_data_dir: Path) -> None:
@@ -70,3 +74,14 @@ def test_update_heartbeat(tmp_data_dir: Path) -> None:
     got = db.get_agent("a3", tmp_data_dir)
     assert got is not None
     assert got.status == AgentStatus.BUSY
+
+
+def test_foreign_key_enforcement(tmp_data_dir: Path) -> None:
+    """Creating a claim for a nonexistent agent should raise IntegrityError."""
+    claim = Claim(
+        claim_id="clm_orphan", agent_id="nonexistent", path="/tmp/x.py",
+        intent=ClaimIntent.EDIT, state=ClaimState.ACTIVE,
+        ttl_s=1800, created_at=_now(), expires_at=_now(),
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_claim(claim, tmp_data_dir)

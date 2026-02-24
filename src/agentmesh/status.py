@@ -21,6 +21,7 @@ def render_status(data_dir: Path | None = None, console: Console | None = None,
     """Render the full status dashboard. Returns JSON string if as_json=True."""
     c = console or Console()
 
+    db.expire_stale_claims(data_dir)
     agents = db.list_agents(data_dir)
     all_claims = db.list_claims(data_dir, active_only=True)
     msgs = db.list_messages(data_dir, limit=10)

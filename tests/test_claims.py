@@ -71,6 +71,22 @@ def test_force_overrides_conflict(tmp_data_dir: Path) -> None:
     assert len(conflicts) == 1  # conflict existed but was overridden
 
 
+def test_force_expires_prior_owners_claim(tmp_data_dir: Path) -> None:
+    """After force-claim, only the forcing agent has an active claim."""
+    _register("a1", tmp_data_dir)
+    _register("a2", tmp_data_dir)
+    make_claim("a1", "/tmp/foo.py", data_dir=tmp_data_dir)
+    make_claim("a2", "/tmp/foo.py", force=True, data_dir=tmp_data_dir)
+    # a1 should have zero active claims on this path
+    a1_claims = db.list_claims(tmp_data_dir, agent_id="a1", active_only=True)
+    a1_on_foo = [c for c in a1_claims if c.path == normalize_path("/tmp/foo.py")]
+    assert len(a1_on_foo) == 0
+    # a2 should be sole owner
+    a2_claims = db.list_claims(tmp_data_dir, agent_id="a2", active_only=True)
+    a2_on_foo = [c for c in a2_claims if c.path == normalize_path("/tmp/foo.py")]
+    assert len(a2_on_foo) == 1
+
+
 def test_release_clears_conflict(tmp_data_dir: Path) -> None:
     _register("a1", tmp_data_dir)
     _register("a2", tmp_data_dir)

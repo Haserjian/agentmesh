@@ -37,3 +37,13 @@ def test_status_renders(tmp_data_dir: Path) -> None:
     c = Console(file=None, force_terminal=False, width=120)
     # Should not raise
     render_status(data_dir=tmp_data_dir, console=c)
+
+
+def test_status_expires_stale_claims(tmp_data_dir: Path) -> None:
+    """Status should not show expired claims."""
+    _register("a1", tmp_data_dir)
+    # Create claim with 0 TTL (already expired)
+    make_claim("a1", "/tmp/stale.py", ttl_s=0, data_dir=tmp_data_dir)
+    result = render_status(data_dir=tmp_data_dir, as_json=True)
+    data = json.loads(result)
+    assert len(data["claims"]) == 0

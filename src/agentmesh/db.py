@@ -92,6 +92,7 @@ def get_connection(data_dir: Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
@@ -248,6 +249,14 @@ def check_and_claim(claim: Claim, force: bool = False,
         if conflicts and not force:
             conn.rollback()
             return False, conflicts
+
+        # Force: expire conflicting claims by other agents
+        if conflicts and force:
+            conn.execute(
+                "UPDATE claims SET state = 'expired' "
+                "WHERE path = ? AND state = 'active' AND intent = 'edit' AND agent_id != ?",
+                (claim.path, claim.agent_id),
+            )
 
         # Release any existing active claim by this agent on same path
         conn.execute(

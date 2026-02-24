@@ -29,17 +29,31 @@ def _get_data_dir() -> Path | None:
 
 
 def _auto_agent_id() -> str:
+    """Session-stable agent ID: env var > TTY-based > fallback.
+
+    Does NOT include PID, so the ID is stable across CLI invocations
+    within the same terminal session.
+    """
     env_id = os.environ.get("AGENTMESH_AGENT_ID")
     if env_id:
         return env_id
-    tty = os.environ.get("TTY", "")
-    if not tty:
-        try:
-            tty = os.ttyname(0)
-        except OSError:
-            tty = "notty"
-    tty_base = Path(tty).name if tty else "notty"
-    return f"claude_{tty_base}_{os.getpid()}"
+    tty = ""
+    try:
+        tty = os.ttyname(0)
+    except OSError:
+        tty = os.environ.get("TTY", "")
+    if tty:
+        tty_base = Path(tty).name
+        return f"claude_{tty_base}"
+    # No TTY (e.g. piped/cron): use a persistent session file per $HOME
+    session_file = Path.home() / ".agentmesh" / ".session_id"
+    if session_file.exists():
+        return session_file.read_text().strip()
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    import uuid as _uuid
+    sid = f"claude_{_uuid.uuid4().hex[:8]}"
+    session_file.write_text(sid)
+    return sid
 
 
 def _ensure_db() -> None:

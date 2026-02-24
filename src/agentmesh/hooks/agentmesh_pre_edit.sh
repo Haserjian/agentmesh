@@ -16,8 +16,16 @@ if [ -z "$FILE_PATH" ]; then
     exit 0
 fi
 
-# Determine agent ID
-AGENT_ID="${AGENTMESH_AGENT_ID:-claude_$(basename "${TTY:-notty}")_$$}"
+# Determine agent ID (session-stable: no PID)
+if [ -n "${AGENTMESH_AGENT_ID:-}" ]; then
+    AGENT_ID="$AGENTMESH_AGENT_ID"
+elif [ -n "${TTY:-}" ]; then
+    AGENT_ID="claude_$(basename "$TTY")"
+elif tty -s 2>/dev/null; then
+    AGENT_ID="claude_$(basename "$(tty)")"
+else
+    AGENT_ID="claude_notty"
+fi
 
 # Check for conflicts (excluding self)
 CONFLICTS=$(agentmesh check "$FILE_PATH" --agent "$AGENT_ID" --json 2>/dev/null || echo "[]")
