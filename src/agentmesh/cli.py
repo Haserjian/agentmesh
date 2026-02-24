@@ -947,6 +947,7 @@ def task_start(
         # Use the orchestrator task's episode if available
         if orch_t.episode_id:
             ep_id = orch_t.episode_id
+            episodes.set_current_episode(ep_id, _get_data_dir())
             console.print(f"Using episode [bold]{ep_id}[/bold] (from orch task)")
             if not claim_resources:
                 console.print("[dim]No claims requested[/dim]")
