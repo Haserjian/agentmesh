@@ -12,8 +12,8 @@ import typer
 from rich.console import Console
 
 from . import __version__
-from .models import Agent, AgentKind, AgentStatus, EventKind, _now
-from . import db, events
+from .models import Agent, AgentKind, AgentStatus, ClaimIntent, EventKind, _now
+from . import db, events, claims
 
 app = typer.Typer(name="agentmesh", help="Local-first multi-agent coordination substrate.")
 console = Console()
@@ -121,3 +121,93 @@ def heartbeat(
     else:
         console.print(f"Agent [bold]{agent_id}[/bold] not found", style="red")
         raise typer.Exit(1)
+
+
+# -- Claim commands --
+
+@app.command()
+def claim(
+    paths: list[str] = typer.Argument(..., help="File paths to claim"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a"),
+    ttl: int = typer.Option(1800, "--ttl", "-t", help="TTL in seconds"),
+    intent: str = typer.Option("edit", "--intent", "-i"),
+    reason: str = typer.Option("", "--reason", "-r"),
+    force: bool = typer.Option(False, "--force", "-f", help="Override existing claims"),
+) -> None:
+    """Claim file paths for editing."""
+    _ensure_db()
+    agent_id = agent or _auto_agent_id()
+    claim_intent = ClaimIntent(intent)
+    had_conflict = False
+    for p in paths:
+        ok, clm, conflicts = claims.make_claim(
+            agent_id, p, intent=claim_intent, ttl_s=ttl,
+            reason=reason, force=force, data_dir=_get_data_dir(),
+        )
+        if ok:
+            console.print(f"Claimed [bold]{clm.path}[/bold] (ttl={ttl}s)")
+            if conflicts:
+                console.print(f"  (forced over {len(conflicts)} existing claim(s))", style="yellow")
+        else:
+            had_conflict = True
+            console.print(f"CONFLICT on [bold]{p}[/bold]:", style="red bold")
+            console.print(claims.format_conflict(conflicts))
+    if had_conflict:
+        raise typer.Exit(1)
+
+
+@app.command()
+def release(
+    paths: list[str] = typer.Argument(None, help="Paths to release"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a"),
+    all_claims: bool = typer.Option(False, "--all", help="Release all claims"),
+) -> None:
+    """Release file claims."""
+    _ensure_db()
+    agent_id = agent or _auto_agent_id()
+    if all_claims:
+        count = claims.release(agent_id, release_all=True, data_dir=_get_data_dir())
+        console.print(f"Released {count} claim(s)")
+    elif paths:
+        total = 0
+        for p in paths:
+            total += claims.release(agent_id, path=p, data_dir=_get_data_dir())
+        console.print(f"Released {total} claim(s)")
+    else:
+        console.print("Specify paths or --all", style="red")
+        raise typer.Exit(1)
+
+
+@app.command()
+def check(
+    path: str = typer.Argument(..., help="Path to check"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Exclude this agent from check"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Check for conflicts on a path."""
+    _ensure_db()
+    conflicts = claims.check(path, exclude_agent=agent, data_dir=_get_data_dir())
+    if json_out:
+        import json as json_mod
+        console.print(json_mod.dumps([c.model_dump() for c in conflicts], indent=2))
+    elif conflicts:
+        console.print(f"CONFLICT on [bold]{path}[/bold]:", style="red bold")
+        console.print(claims.format_conflict(conflicts))
+        raise typer.Exit(1)
+    else:
+        console.print(f"No conflicts on [bold]{path}[/bold]", style="green")
+
+
+@app.command()
+def gc(
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    max_age: int = typer.Option(72, "--max-age", help="Max age in hours"),
+) -> None:
+    """Garbage-collect old data."""
+    _ensure_db()
+    if dry_run:
+        console.print(f"Would GC data older than {max_age}h (dry run)")
+        return
+    result = db.gc_old_data(max_age_hours=max_age, data_dir=_get_data_dir())
+    events.append_event(EventKind.GC, payload=result, data_dir=_get_data_dir())
+    console.print(f"GC: {result['claims']} claims, {result['agents']} agents, {result['messages']} messages")
