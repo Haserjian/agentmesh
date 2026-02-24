@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import threading
+import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -122,6 +126,95 @@ def _write_scaffold_file(path: Path, content: str, force: bool) -> str:
     return "updated" if existed else "created"
 
 
+@contextmanager
+def _orchestrator_lease(
+    *,
+    json_out: bool = False,
+    force: bool = False,
+    ttl_s: int = 300,
+):
+    """Acquire orchestration lease lock for mutating control-plane operations."""
+    from . import orch_control
+
+    owner = orch_control.make_owner(_auto_agent_id())
+    ok, _claim, conflicts = orch_control.acquire_lease(
+        owner=owner,
+        force=force,
+        ttl_s=ttl_s,
+        data_dir=_get_data_dir(),
+    )
+    if not ok:
+        holders = [{"agent_id": c.agent_id, "expires_at": c.expires_at} for c in conflicts]
+        if json_out:
+            console.print(json.dumps({
+                "error": "orchestration_lock_conflict",
+                "resource": "LOCK:orchestration",
+                "holders": holders,
+            }, indent=2))
+        else:
+            console.print("Orchestrator lease conflict on LOCK:orchestration", style="red")
+            for h in holders:
+                console.print(
+                    f"  held by {h['agent_id']} (expires {h['expires_at']})",
+                    style="yellow",
+                )
+        raise typer.Exit(1)
+
+    try:
+        yield owner
+    finally:
+        orch_control.release_lease(owner, data_dir=_get_data_dir())
+
+
+@contextmanager
+def _orchestrator_lease_heartbeat(
+    *,
+    json_out: bool = False,
+    ttl_s: int = 300,
+    renew_every_s: float = 90.0,
+):
+    """Lease context with background renewal loop for long-running runner paths."""
+    state: dict[str, Any] = {"renew_ok": True, "error": ""}
+    stop_evt = threading.Event()
+    owner = ""
+
+    with _orchestrator_lease(json_out=json_out, ttl_s=ttl_s) as owner_id:
+        owner = owner_id
+
+        def _renew_loop() -> None:
+            from . import orch_control
+
+            interval = max(renew_every_s, 1.0)
+            while not stop_evt.wait(interval):
+                ok, claim, conflicts = orch_control.renew_lease(
+                    owner=owner,
+                    ttl_s=ttl_s,
+                    data_dir=_get_data_dir(),
+                )
+                if not ok:
+                    state["renew_ok"] = False
+                    state["error"] = (
+                        "lease renewal conflict: "
+                        + ", ".join(f"{c.agent_id}@{c.expires_at}" for c in conflicts)
+                    )
+                    stop_evt.set()
+                    return
+                events.append_event(
+                    kind=EventKind.ORCH_LEASE_RENEW,
+                    agent_id=owner,
+                    payload={"op": "lease_renew_bg", "expires_at": claim.expires_at, "ttl_s": ttl_s},
+                    data_dir=_get_data_dir(),
+                )
+
+        t = threading.Thread(target=_renew_loop, name="agentmesh-lease-renew", daemon=True)
+        t.start()
+        try:
+            yield owner, state
+        finally:
+            stop_evt.set()
+            t.join(timeout=2.0)
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -162,6 +255,48 @@ def init_cmd(
         "claims": {
             "ttl_seconds": claim_ttl,
         },
+        "worker_adapters": {
+            "allow_backends": [],
+            "allow_modules": [],
+            "allow_paths": [],
+        },
+        "assay": {
+            "emit_on_commit": False,
+            "required": False,
+            "command": "",
+            "timeout_s": 30,
+        },
+        "public_private": {
+            "public_path_globs": [
+                "src/**",
+                "tests/**",
+                "README.md",
+                "LICENSE",
+                "docs/spec/**",
+                "docs/*.template.json",
+                "docs/*.public.json",
+                "docs/*.sanitized.json",
+            ],
+            "private_path_globs": [
+                ".agentmesh/runs/**",
+                "docs/alpha-gate-report.json",
+                "**/ci-result*.json",
+                "**/ci-witness*.log",
+            ],
+            "review_path_globs": [
+                "docs/**",
+                "scripts/**",
+                ".github/**",
+            ],
+            "private_content_patterns": [
+                "(^|[^A-Za-z])ghp_[A-Za-z0-9]{20,}",
+                "AKIA[0-9A-Z]{16}",
+                "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+                "\\bgo[- ]to[- ]market\\b",
+                "\\bpricing\\b",
+                "\\bcompetitive positioning\\b",
+            ],
+        },
         "task_finish": {
             "run_tests": test_command,
             "capsule": capsule_default,
@@ -194,6 +329,9 @@ def init_cmd(
             "resource.check": "agentmesh check <path>",
             "mesh.status": "agentmesh status",
             "git.commit": "agentmesh commit -m <msg> [--run-tests <cmd>] [--capsule]",
+            "public_private.classify": "agentmesh classify [--staged] [--json] [--fail-on-private] [--fail-on-review]",
+            "release.check": "agentmesh release-check [--staged|--all] [--require-witness] [--run-tests <cmd>] [--json]",
+            "alpha_gate.sanitize_report": "agentmesh sanitize-alpha-gate-report --in <private_report_json> --out <public_report_json>",
             "weave.verify": "agentmesh weave verify",
             "weave.export": "agentmesh weave export --md",
             "episode.export": "agentmesh episode export <episode_id>",
@@ -210,6 +348,8 @@ def init_cmd(
             "Prefer task.start/task.finish for basic workflows.",
             "Claim resources before editing shared files.",
             "Treat weave verify failures as blocking.",
+            "Run release-check before publishing: agentmesh release-check --staged --json",
+            "Convert private alpha gate reports before publishing: agentmesh sanitize-alpha-gate-report",
         ],
     }
 
@@ -574,6 +714,265 @@ def doctor_cmd() -> None:
         console.print("  [green]Everything looks good.[/green]")
 
 
+# -- Public/Private classification --
+
+@app.command(name="classify")
+def classify_cmd(
+    paths: list[str] = typer.Argument([], help="File paths to classify"),
+    staged: bool = typer.Option(False, "--staged", help="Classify staged files from git index"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+    fail_on_private: bool = typer.Option(False, "--fail-on-private", help="Exit non-zero if any path is private"),
+    fail_on_review: bool = typer.Option(False, "--fail-on-review", help="Exit non-zero if any path requires review"),
+) -> None:
+    """Classify files as public/private/review using deterministic policy rules."""
+    from . import public_private
+
+    repo_root = Path.cwd()
+    target_paths: list[str] = []
+
+    if staged:
+        if not gitbridge.is_git_repo(str(repo_root)):
+            console.print("Not a git repository; cannot use --staged", style="red")
+            raise typer.Exit(1)
+        target_paths.extend(gitbridge.get_staged_files(str(repo_root)))
+
+    target_paths.extend(paths)
+    # Stable unique order
+    seen: set[str] = set()
+    unique_paths: list[str] = []
+    for p in target_paths:
+        norm = p.strip()
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        unique_paths.append(norm)
+
+    if not unique_paths:
+        console.print("No paths to classify. Pass paths or use --staged.", style="yellow")
+        raise typer.Exit(1)
+
+    results = public_private.classify_paths(unique_paths, repo_root=repo_root)
+    private_count = sum(1 for r in results if r.classification == public_private.PRIVATE)
+    review_count = sum(1 for r in results if r.classification == public_private.REVIEW)
+
+    if json_out:
+        console.print(json.dumps({
+            "results": [
+                {
+                    "path": r.path,
+                    "classification": r.classification,
+                    "reasons": r.reasons,
+                }
+                for r in results
+            ],
+            "counts": {
+                "public": sum(1 for r in results if r.classification == public_private.PUBLIC),
+                "private": private_count,
+                "review": review_count,
+            },
+        }, indent=2))
+    else:
+        for r in results:
+            if r.classification == public_private.PRIVATE:
+                style = "red"
+                label = "PRIVATE"
+            elif r.classification == public_private.REVIEW:
+                style = "yellow"
+                label = "REVIEW"
+            else:
+                style = "green"
+                label = "PUBLIC"
+            console.print(f"[{style}]{label}[/{style}] {r.path}")
+            for reason in r.reasons:
+                console.print(f"  [dim]- {reason}[/dim]")
+        console.print(
+            f"\npublic={sum(1 for r in results if r.classification == public_private.PUBLIC)} "
+            f"private={private_count} review={review_count}"
+        )
+
+    if fail_on_private and private_count > 0:
+        raise typer.Exit(2)
+    if fail_on_review and review_count > 0:
+        raise typer.Exit(3)
+
+
+@app.command(name="release-check")
+def release_check_cmd(
+    paths: list[str] = typer.Argument([], help="File paths to classify"),
+    staged: bool = typer.Option(True, "--staged/--all", help="Use staged files (default) or all tracked/provided files"),
+    run_tests: str = typer.Option("", "--run-tests", help="Optional test command to run"),
+    require_witness: bool = typer.Option(False, "--require-witness", help="Require witness verification on commit"),
+    witness_commit: str = typer.Option("HEAD", "--witness-commit", help="Commit ref to verify when requiring witness"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Deterministic preflight for publishing/release automation."""
+    from . import public_private
+
+    repo_root = Path.cwd()
+    if not gitbridge.is_git_repo(str(repo_root)):
+        if json_out:
+            console.print(json.dumps({"error": "not_git_repo"}, indent=2))
+        else:
+            console.print("Not a git repository", style="red")
+        raise typer.Exit(1)
+
+    _ensure_db()
+
+    target_paths: list[str] = []
+    if staged:
+        target_paths.extend(gitbridge.get_staged_files(str(repo_root)))
+    else:
+        if paths:
+            target_paths.extend(paths)
+        else:
+            try:
+                tracked = subprocess.run(
+                    ["git", "ls-files"],
+                    capture_output=True,
+                    text=True,
+                    cwd=str(repo_root),
+                    check=True,
+                ).stdout
+                target_paths.extend([ln.strip() for ln in tracked.splitlines() if ln.strip()])
+            except subprocess.CalledProcessError:
+                if json_out:
+                    console.print(json.dumps({"error": "git_ls_files_failed"}, indent=2))
+                else:
+                    console.print("Failed to list tracked files", style="red")
+                raise typer.Exit(1)
+    target_paths.extend(paths)
+
+    seen: set[str] = set()
+    unique_paths: list[str] = []
+    for p in target_paths:
+        norm = p.strip()
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        unique_paths.append(norm)
+
+    class_results: list[public_private.Classification] = []
+    if unique_paths:
+        class_results = public_private.classify_paths(unique_paths, repo_root=repo_root)
+
+    private_count = sum(1 for r in class_results if r.classification == public_private.PRIVATE)
+    review_count = sum(1 for r in class_results if r.classification == public_private.REVIEW)
+
+    weave_ok, weave_err = weaver.verify_weave(_get_data_dir())
+
+    witness_status = "SKIPPED"
+    witness_details = ""
+    if require_witness:
+        try:
+            from . import witness as _witness
+        except ImportError:
+            witness_status = "UNAVAILABLE"
+            witness_details = "witness extras not installed"
+        else:
+            wr = _witness.verify_commit(witness_commit, cwd=str(repo_root), data_dir=_get_data_dir())
+            witness_status = wr.status
+            witness_details = wr.details
+
+    tests_ok = True
+    tests_summary = ""
+    if run_tests.strip():
+        tests_ok, tests_summary = gitbridge.run_tests(run_tests.strip(), cwd=str(repo_root))
+
+    exit_code = 0
+    if private_count > 0:
+        exit_code = 2
+    elif review_count > 0:
+        exit_code = 3
+    elif not weave_ok:
+        exit_code = 4
+    elif require_witness and witness_status != "VERIFIED":
+        exit_code = 5
+    elif run_tests.strip() and not tests_ok:
+        exit_code = 6
+
+    payload = {
+        "release_check": {
+            "ok": exit_code == 0,
+            "exit_code": exit_code,
+            "classification": {
+                "files": len(class_results),
+                "public": sum(1 for r in class_results if r.classification == public_private.PUBLIC),
+                "private": private_count,
+                "review": review_count,
+                "results": [
+                    {"path": r.path, "classification": r.classification, "reasons": r.reasons}
+                    for r in class_results
+                ],
+            },
+            "weave_verify": {"ok": weave_ok, "error": weave_err},
+            "witness": {
+                "required": require_witness,
+                "status": witness_status,
+                "details": witness_details,
+                "commit": witness_commit,
+            },
+            "tests": {
+                "command": run_tests.strip(),
+                "ok": tests_ok,
+                "summary": tests_summary,
+            },
+        }
+    }
+
+    if json_out:
+        print(json.dumps(payload, indent=2))
+    else:
+        rc = payload["release_check"]
+        console.print(f"classify: public={rc['classification']['public']} private={private_count} review={review_count}")
+        console.print(f"weave: {'ok' if weave_ok else 'fail'}")
+        if require_witness:
+            console.print(f"witness: {witness_status}")
+        if run_tests.strip():
+            console.print(f"tests: {'ok' if tests_ok else 'fail'}")
+
+    if exit_code != 0:
+        raise typer.Exit(exit_code)
+
+
+@app.command(name="sanitize-alpha-gate-report")
+def sanitize_alpha_gate_report_cmd(
+    in_path: str = typer.Option(".agentmesh/runs/alpha-gate-report.json", "--in", help="Raw/private report JSON"),
+    out_path: str = typer.Option("docs/alpha-gate-report.public.json", "--out", help="Sanitized/public report JSON"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Convert a private alpha-gate report into a public-safe artifact."""
+    from .alpha_gate import write_sanitized_alpha_gate_report
+
+    src = Path(in_path)
+    dst = Path(out_path)
+    if not src.exists():
+        if json_out:
+            print(json.dumps({"error": "input_not_found", "path": str(src)}, indent=2))
+        else:
+            console.print(f"Input report not found: {src}", style="red")
+        raise typer.Exit(1)
+
+    try:
+        report = write_sanitized_alpha_gate_report(src, dst)
+    except Exception as exc:
+        if json_out:
+            print(json.dumps({"error": "sanitize_failed", "detail": str(exc)}, indent=2))
+        else:
+            console.print(f"Sanitize failed: {exc}", style="red")
+        raise typer.Exit(1)
+
+    if json_out:
+        print(json.dumps({
+            "ok": True,
+            "input": str(src),
+            "output": str(dst),
+            "overall_pass": report.get("overall_pass", False),
+            "sanitized": report.get("sanitized", True),
+        }, indent=2))
+    else:
+        console.print(f"Wrote sanitized report: {dst}")
+
+
 # -- Bundle commands --
 
 bundle_app = typer.Typer(help="Context capsule commands.")
@@ -809,9 +1208,23 @@ def commit_cmd(
                                          help="Append episode ID trailer to commit message"),
     run_tests: Optional[str] = typer.Option(None, "--run-tests", help="Test command to run before commit"),
     capsule: bool = typer.Option(False, "--capsule", help="Also emit a context capsule"),
+    emit_assay: bool = typer.Option(False, "--emit-assay", help="Emit optional Assay receipt after commit"),
+    assay_command: str = typer.Option("", "--assay-command", help="Override Assay command (shell)"),
+    assay_timeout_s: int = typer.Option(30, "--assay-timeout", help="Assay command timeout seconds"),
+    assay_required: bool = typer.Option(False, "--assay-required", help="Fail command if Assay emit fails"),
 ) -> None:
     """Wrap git commit with provenance: auto-creates a weave event linking the commit to the episode."""
     _ensure_db()
+    # task_finish calls this function directly; normalize Typer OptionInfo defaults.
+    if not isinstance(emit_assay, bool):
+        emit_assay = False
+    if not isinstance(assay_command, str):
+        assay_command = ""
+    if not isinstance(assay_timeout_s, int):
+        assay_timeout_s = 30
+    if not isinstance(assay_required, bool):
+        assay_required = False
+
     agent_id = agent or _auto_agent_id()
     cwd = os.getcwd()
 
@@ -892,6 +1305,78 @@ def commit_cmd(
         },
         data_dir=_get_data_dir(),
     )
+
+    policy = _load_policy(Path(cwd))
+    assay_cfg = _policy_get(policy, ["assay"], {})
+    if not isinstance(assay_cfg, dict):
+        assay_cfg = {}
+    assay_enabled = emit_assay or bool(assay_cfg.get("emit_on_commit", False))
+    assay_cmd = assay_command.strip() or str(assay_cfg.get("command", "")).strip()
+    cfg_timeout = assay_cfg.get("timeout_s", 30)
+    cfg_timeout_s = cfg_timeout if isinstance(cfg_timeout, int) else 30
+    effective_assay_timeout = assay_timeout_s if assay_timeout_s > 0 else max(cfg_timeout_s, 1)
+    assay_hard_fail = assay_required or bool(assay_cfg.get("required", False))
+
+    if assay_enabled:
+        if not assay_cmd:
+            assay_cmd = "assay receipt emit"
+        episode_id = episodes.get_current_episode(_get_data_dir()) or ""
+        env = {
+            **os.environ,
+            "AGENTMESH_COMMIT_SHA": sha,
+            "AGENTMESH_PATCH_HASH": patch_hash,
+            "AGENTMESH_AGENT_ID": agent_id,
+            "AGENTMESH_EPISODE_ID": episode_id,
+            "AGENTMESH_WEAVE_EVENT_ID": evt.event_id,
+            "AGENTMESH_WITNESS_HASH": witness_result[1] if witness_result else "",
+            "AGENTMESH_FILES_JSON": json.dumps(staged_files),
+            "AGENTMESH_REPO": cwd,
+        }
+        returncode = 1
+        assay_stdout = ""
+        assay_stderr = ""
+        assay_error = ""
+        try:
+            proc = subprocess.run(
+                assay_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=effective_assay_timeout,
+                cwd=cwd,
+                env=env,
+            )
+            returncode = proc.returncode
+            assay_stdout = (proc.stdout or "").strip()
+            assay_stderr = (proc.stderr or "").strip()
+        except subprocess.TimeoutExpired:
+            assay_error = f"assay command timed out after {effective_assay_timeout}s"
+        except OSError as exc:
+            assay_error = str(exc)
+
+        assay_ok = returncode == 0 and not assay_error
+        events.append_event(
+            EventKind.ASSAY_RECEIPT,
+            agent_id=agent_id,
+            payload={
+                "sha": sha,
+                "command": assay_cmd,
+                "ok": assay_ok,
+                "returncode": returncode,
+                "stdout": assay_stdout[-1000:],
+                "stderr": assay_stderr[-1000:],
+                "error": assay_error,
+            },
+            data_dir=_get_data_dir(),
+        )
+
+        if assay_ok:
+            console.print("  assay receipt: emitted")
+        else:
+            detail = assay_error or assay_stderr or "non-zero exit"
+            console.print(f"  assay receipt: failed ({detail})", style="yellow")
+            if assay_hard_fail:
+                raise typer.Exit(1)
 
     console.print(f"Committed [bold]{sha[:10]}[/bold]  weave={evt.event_id}")
     if witness_result:
@@ -1172,14 +1657,38 @@ def orch_create(
     title: str = typer.Option(..., "--title", "-t", help="Task title"),
     description: str = typer.Option("", "--description", "-d", help="Task description"),
     episode: str = typer.Option("", "--episode", "-e", help="Episode ID to link"),
+    max_cost_usd: float = typer.Option(0.0, "--max-cost-usd", help="Optional max cumulative worker cost for this task"),
+    verify_tests: str = typer.Option("", "--verify-tests", help="Independent test verification command for harvest"),
+    depends_on: list[str] = typer.Option([], "--depends-on", "-p", help="Dependency task ID (repeatable)"),
     json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ) -> None:
     """Create a new orchestrator task (starts in PLANNED state)."""
     _ensure_db()
     from . import orchestrator
-    task = orchestrator.create_task(title=title, description=description, episode_id=episode, data_dir=_get_data_dir())
+    meta: dict[str, Any] = {}
+    if max_cost_usd > 0:
+        meta["max_cost_usd"] = max_cost_usd
+    if verify_tests.strip():
+        meta["verify_tests_command"] = verify_tests.strip()
+    dep_list = [d.strip() for d in depends_on if d.strip()]
+    with _orchestrator_lease(json_out=json_out):
+        task = orchestrator.create_task(
+            title=title,
+            description=description,
+            episode_id=episode,
+            depends_on=dep_list,
+            meta=meta,
+            data_dir=_get_data_dir(),
+        )
     if json_out:
-        console.print(json.dumps({"task_id": task.task_id, "state": task.state.value, "title": task.title}, indent=2))
+        console.print(json.dumps({
+            "task_id": task.task_id,
+            "state": task.state.value,
+            "title": task.title,
+            "max_cost_usd": task.meta.get("max_cost_usd", 0.0),
+            "verify_tests_command": task.meta.get("verify_tests_command", ""),
+            "depends_on": task.meta.get("depends_on", []),
+        }, indent=2))
     else:
         console.print(f"Created [bold]{task.task_id}[/bold]  state={task.state.value}")
 
@@ -1189,18 +1698,63 @@ def orch_assign(
     task_id: str = typer.Argument(..., help="Task ID"),
     agent: str = typer.Option("", "--agent", "-a", help="Agent ID (auto-detected if omitted)"),
     branch: str = typer.Option("", "--branch", "-b", help="Git branch"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ) -> None:
     """Assign a PLANNED task to an agent."""
     _ensure_db()
     from . import orchestrator
     agent_id = agent or _auto_agent_id()
     _ensure_agent_exists(agent_id)
-    try:
-        task = orchestrator.assign_task(task_id, agent_id, branch=branch, data_dir=_get_data_dir())
-    except orchestrator.TransitionError as e:
-        console.print(str(e), style="red")
-        raise typer.Exit(1)
-    console.print(f"Assigned [bold]{task.task_id}[/bold] to {agent_id}  state={task.state.value}")
+    with _orchestrator_lease(json_out=json_out):
+        try:
+            task = orchestrator.assign_task(task_id, agent_id, branch=branch, data_dir=_get_data_dir())
+        except orchestrator.TransitionError as e:
+            if json_out:
+                console.print(json.dumps({"error": str(e)}, indent=2))
+            else:
+                console.print(str(e), style="red")
+            raise typer.Exit(1)
+    if json_out:
+        console.print(json.dumps({
+            "task_id": task.task_id,
+            "state": task.state.value,
+            "assigned_agent_id": agent_id,
+            "branch": task.branch,
+        }, indent=2))
+    else:
+        console.print(f"Assigned [bold]{task.task_id}[/bold] to {agent_id}  state={task.state.value}")
+
+
+@orch_app.command(name="depends")
+def orch_depends(
+    task_id: str = typer.Argument(..., help="Task ID"),
+    on: list[str] = typer.Option([], "--on", "-o", help="Dependency task ID (repeatable)"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Set dependencies for a task and validate the graph is acyclic."""
+    _ensure_db()
+    from . import orchestrator
+
+    with _orchestrator_lease(json_out=json_out):
+        try:
+            task = orchestrator.set_task_dependencies(
+                task_id,
+                depends_on=[item.strip() for item in on if item.strip()],
+                data_dir=_get_data_dir(),
+            )
+        except orchestrator.TransitionError as e:
+            if json_out:
+                console.print(json.dumps({"error": str(e)}, indent=2))
+            else:
+                console.print(str(e), style="red")
+            raise typer.Exit(1)
+
+    deps = task.meta.get("depends_on", []) if isinstance(task.meta, dict) else []
+    if json_out:
+        console.print(json.dumps({"task_id": task.task_id, "depends_on": deps}, indent=2))
+    else:
+        rendered = ", ".join(deps) if deps else "(none)"
+        console.print(f"Dependencies for [bold]{task.task_id}[/bold]: {rendered}")
 
 
 @orch_app.command(name="advance")
@@ -1209,6 +1763,7 @@ def orch_advance(
     to: str = typer.Option(..., "--to", help="Target state (running, pr_open, ci_pass, review_pass, merged)"),
     reason: str = typer.Option("", "--reason", "-r", help="Reason for transition"),
     pr_url: str = typer.Option("", "--pr-url", help="PR URL (for pr_open transition)"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ) -> None:
     """Advance a task to the next state."""
     _ensure_db()
@@ -1222,28 +1777,46 @@ def orch_advance(
     kwargs: dict[str, Any] = {}
     if pr_url:
         kwargs["pr_url"] = pr_url
-    try:
-        task = orchestrator.transition_task(task_id, to_state, reason=reason, data_dir=_get_data_dir(), **kwargs)
-    except orchestrator.TransitionError as e:
-        console.print(str(e), style="red")
-        raise typer.Exit(1)
-    console.print(f"Advanced [bold]{task.task_id}[/bold] to {task.state.value}")
+    with _orchestrator_lease(json_out=json_out):
+        try:
+            task = orchestrator.transition_task(task_id, to_state, reason=reason, data_dir=_get_data_dir(), **kwargs)
+        except orchestrator.TransitionError as e:
+            if json_out:
+                console.print(json.dumps({"error": str(e)}, indent=2))
+            else:
+                console.print(str(e), style="red")
+            raise typer.Exit(1)
+    if json_out:
+        console.print(json.dumps({
+            "task_id": task.task_id,
+            "state": task.state.value,
+        }, indent=2))
+    else:
+        console.print(f"Advanced [bold]{task.task_id}[/bold] to {task.state.value}")
 
 
 @orch_app.command(name="abort")
 def orch_abort(
     task_id: str = typer.Argument(..., help="Task ID"),
     reason: str = typer.Option("", "--reason", "-r", help="Abort reason"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ) -> None:
     """Abort a task from any non-terminal state."""
     _ensure_db()
     from . import orchestrator
-    try:
-        task = orchestrator.abort_task(task_id, reason=reason, data_dir=_get_data_dir())
-    except orchestrator.TransitionError as e:
-        console.print(str(e), style="red")
-        raise typer.Exit(1)
-    console.print(f"Aborted [bold]{task.task_id}[/bold]")
+    with _orchestrator_lease(json_out=json_out):
+        try:
+            task = orchestrator.abort_task(task_id, reason=reason, data_dir=_get_data_dir())
+        except orchestrator.TransitionError as e:
+            if json_out:
+                console.print(json.dumps({"error": str(e)}, indent=2))
+            else:
+                console.print(str(e), style="red")
+            raise typer.Exit(1)
+    if json_out:
+        console.print(json.dumps({"task_id": task.task_id, "state": task.state.value}, indent=2))
+    else:
+        console.print(f"Aborted [bold]{task.task_id}[/bold]")
 
 
 @orch_app.command(name="show")
@@ -1292,6 +1865,299 @@ def orch_show(
                 console.print(f"    #{a.attempt_number} {a.agent_id} {outcome}")
 
 
+@orch_app.command(name="freeze")
+def orch_freeze(
+    off: bool = typer.Option(False, "--off", help="Disable freeze instead of enabling"),
+    reason: str = typer.Option("", "--reason", "-r", help="Reason for freeze/unfreeze"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Toggle spawn freeze for orchestrator workers."""
+    _ensure_db()
+    from . import orch_control
+
+    enabled = not off
+    with _orchestrator_lease(json_out=json_out):
+        owner = orch_control.make_owner(_auto_agent_id())
+        orch_control.set_frozen(enabled, owner=owner, reason=reason, data_dir=_get_data_dir())
+        weaver.append_weave(trace_id="orch:freeze", data_dir=_get_data_dir())
+        events.append_event(
+            kind=EventKind.ORCH_FREEZE,
+            agent_id=owner,
+            payload={"frozen": enabled, "reason": reason},
+            data_dir=_get_data_dir(),
+        )
+
+    if json_out:
+        console.print(json.dumps({"frozen": enabled, "reason": reason}, indent=2))
+    else:
+        state = "enabled" if enabled else "disabled"
+        console.print(f"Orchestrator freeze {state}")
+
+
+@orch_app.command(name="lock-merges")
+def orch_lock_merges(
+    off: bool = typer.Option(False, "--off", help="Disable merge lock instead of enabling"),
+    reason: str = typer.Option("", "--reason", "-r", help="Reason for lock/unlock"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Toggle merge transition lock (blocks REVIEW_PASS -> MERGED)."""
+    _ensure_db()
+    from . import orch_control
+
+    enabled = not off
+    with _orchestrator_lease(json_out=json_out):
+        owner = orch_control.make_owner(_auto_agent_id())
+        orch_control.set_merges_locked(enabled, owner=owner, reason=reason, data_dir=_get_data_dir())
+        weaver.append_weave(trace_id="orch:lock_merges", data_dir=_get_data_dir())
+        events.append_event(
+            kind=EventKind.ORCH_LOCK_MERGES,
+            agent_id=owner,
+            payload={"merges_locked": enabled, "reason": reason},
+            data_dir=_get_data_dir(),
+        )
+
+    if json_out:
+        console.print(json.dumps({"merges_locked": enabled, "reason": reason}, indent=2))
+    else:
+        state = "enabled" if enabled else "disabled"
+        console.print(f"Merge lock {state}")
+
+
+@orch_app.command(name="abort-all")
+def orch_abort_all(
+    reason: str = typer.Option("emergency abort-all", "--reason", "-r", help="Abort reason"),
+    keep_worktrees: bool = typer.Option(False, "--keep-worktrees", help="Do not remove worker worktrees"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Abort all active workers and all non-terminal tasks."""
+    _ensure_db()
+    from . import orch_control, orchestrator, spawner
+
+    aborted_spawns: list[str] = []
+    aborted_tasks: list[str] = []
+    lock_cleared = 0
+
+    with _orchestrator_lease(json_out=json_out, force=True):
+        active_spawns = spawner.list_spawns(active_only=True, data_dir=_get_data_dir())
+        for rec in active_spawns:
+            try:
+                spawner.abort(
+                    rec.spawn_id,
+                    reason=reason,
+                    cleanup_worktree=not keep_worktrees,
+                    data_dir=_get_data_dir(),
+                )
+                aborted_spawns.append(rec.spawn_id)
+            except spawner.SpawnError:
+                continue
+
+        tasks = db.list_tasks(data_dir=_get_data_dir(), limit=1000)
+        for task in tasks:
+            if task.state in orchestrator.TERMINAL_STATES:
+                continue
+            try:
+                orchestrator.abort_task(
+                    task.task_id,
+                    reason=reason,
+                    agent_id=task.assigned_agent_id,
+                    data_dir=_get_data_dir(),
+                )
+                aborted_tasks.append(task.task_id)
+            except orchestrator.TransitionError:
+                continue
+
+        lock_cleared = orch_control.clear_lease(data_dir=_get_data_dir())
+        weaver.append_weave(trace_id="orch:abort_all", data_dir=_get_data_dir())
+        events.append_event(
+            kind=EventKind.ORCH_ABORT_ALL,
+            payload={
+                "reason": reason,
+                "aborted_spawns": aborted_spawns,
+                "aborted_tasks": aborted_tasks,
+                "lock_cleared": lock_cleared,
+            },
+            data_dir=_get_data_dir(),
+        )
+
+    if json_out:
+        console.print(json.dumps({
+            "aborted_spawns": aborted_spawns,
+            "aborted_tasks": aborted_tasks,
+            "lock_cleared": lock_cleared,
+        }, indent=2))
+    else:
+        console.print(f"Aborted spawns: {len(aborted_spawns)}")
+        console.print(f"Aborted tasks: {len(aborted_tasks)}")
+        console.print(f"Cleared orchestration locks: {lock_cleared}")
+
+
+@orch_app.command(name="watch")
+def orch_watch(
+    interval_s: float = typer.Option(1.5, "--interval", help="Poll interval in seconds"),
+    once: bool = typer.Option(False, "--once", help="Read one poll interval and exit"),
+    json_out: bool = typer.Option(False, "--json", help="Emit JSON lines"),
+) -> None:
+    """Stream orchestration-relevant events."""
+    _ensure_db()
+    from . import events as eventlog
+
+    interested = {
+        EventKind.TASK_TRANSITION.value,
+        EventKind.WORKER_SPAWN.value,
+        EventKind.WORKER_DONE.value,
+        EventKind.COST_EXCEEDED.value,
+        EventKind.ORCH_FREEZE.value,
+        EventKind.ORCH_LOCK_MERGES.value,
+        EventKind.ORCH_ABORT_ALL.value,
+        EventKind.ORCH_LEASE_RENEW.value,
+        EventKind.ADAPTER_LOAD.value,
+    }
+
+    since = 0
+    try:
+        while True:
+            new_events = eventlog.read_events(data_dir=_get_data_dir(), since_seq=since)
+            for evt in new_events:
+                since = max(since, evt.seq)
+                kind = evt.kind.value if hasattr(evt.kind, "value") else str(evt.kind)
+                if kind not in interested:
+                    continue
+                row = {
+                    "seq": evt.seq,
+                    "ts": evt.ts,
+                    "kind": kind,
+                    "agent_id": evt.agent_id,
+                    "payload": evt.payload,
+                }
+                if json_out:
+                    print(json.dumps(row, separators=(",", ":")))
+                else:
+                    console.print(
+                        f"{row['seq']:>6}  {row['ts'][:19]}  {row['kind']:16}  {row['agent_id'] or '-'}"
+                    )
+            if once:
+                break
+            time.sleep(max(interval_s, 0.1))
+    except KeyboardInterrupt:
+        return
+
+
+@orch_app.command(name="run")
+def orch_run(
+    stale_threshold: int = typer.Option(300, "--stale-threshold", help="Stale heartbeat threshold (seconds)"),
+    spawn_timeout: int = typer.Option(1800, "--spawn-timeout", help="Default spawn timeout (seconds)"),
+    interval_s: float = typer.Option(5.0, "--interval", help="Loop interval in seconds"),
+    max_iterations: int = typer.Option(0, "--max-iterations", help="0 = run forever"),
+    lease_ttl: int = typer.Option(300, "--lease-ttl", help="Lease TTL seconds"),
+    lease_renew: float = typer.Option(90.0, "--lease-renew-interval", help="Background lease renew interval seconds"),
+    json_out: bool = typer.Option(False, "--json", help="Emit JSON lines"),
+) -> None:
+    """Run orchestrator control loop with auto lease renewal."""
+    _ensure_db()
+    from . import watchdog
+
+    loops = 0
+    try:
+        with _orchestrator_lease_heartbeat(
+            json_out=json_out,
+            ttl_s=lease_ttl,
+            renew_every_s=lease_renew,
+        ) as (owner, lease_state):
+            if not json_out:
+                console.print(f"Runner lease owner: {owner}")
+            while True:
+                if not lease_state.get("renew_ok", True):
+                    msg = lease_state.get("error", "lease renewal failed")
+                    if json_out:
+                        print(json.dumps({"error": "lease_renew_failed", "detail": msg}, separators=(",", ":")))
+                    else:
+                        console.print(f"Lease renewal failed: {msg}", style="red")
+                    raise typer.Exit(1)
+
+                result = watchdog.scan(
+                    stale_threshold_s=stale_threshold,
+                    spawn_timeout_s=spawn_timeout,
+                    data_dir=_get_data_dir(),
+                )
+                row = {
+                    "loop": loops + 1,
+                    "clean": result.clean,
+                    "stale_agents": result.stale_agents,
+                    "aborted_tasks": result.aborted_tasks,
+                    "harvested_spawns": result.harvested_spawns,
+                    "timed_out_spawns": result.timed_out_spawns,
+                    "cost_exceeded_tasks": result.cost_exceeded_tasks,
+                }
+                if json_out:
+                    print(json.dumps(row, separators=(",", ":")))
+                else:
+                    console.print(
+                        f"loop={row['loop']} clean={row['clean']} "
+                        f"stale={len(row['stale_agents'])} aborted={len(row['aborted_tasks'])} "
+                        f"harvested={len(row['harvested_spawns'])} timeout={len(row['timed_out_spawns'])} "
+                        f"cost={len(row['cost_exceeded_tasks'])}"
+                    )
+
+                loops += 1
+                if max_iterations > 0 and loops >= max_iterations:
+                    break
+                time.sleep(max(interval_s, 0.1))
+    except KeyboardInterrupt:
+        return
+
+
+@orch_app.command(name="lease-renew")
+def orch_lease_renew(
+    owner: str = typer.Option("", "--owner", "-o", help="Existing orchestrator owner id"),
+    ttl: int = typer.Option(300, "--ttl", help="Lease TTL seconds"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Renew orchestrator lease for long-running orchestrator daemons."""
+    _ensure_db()
+    from . import orch_control
+
+    if not owner:
+        owner = os.environ.get("AGENTMESH_ORCH_OWNER", "").strip()
+    if not owner:
+        if json_out:
+            console.print(json.dumps({"error": "owner_required"}, indent=2))
+        else:
+            console.print("Owner is required (--owner or AGENTMESH_ORCH_OWNER)", style="red")
+        raise typer.Exit(1)
+
+    ok, claim, conflicts = orch_control.renew_lease(
+        owner=owner,
+        ttl_s=ttl,
+        data_dir=_get_data_dir(),
+    )
+    if not ok:
+        if json_out:
+            console.print(json.dumps({
+                "error": "orchestration_lock_conflict",
+                "resource": "LOCK:orchestration",
+                "holders": [{"agent_id": c.agent_id, "expires_at": c.expires_at} for c in conflicts],
+            }, indent=2))
+        else:
+            console.print("Lease renewal failed due to lock conflict", style="red")
+        raise typer.Exit(1)
+
+    events.append_event(
+        kind=EventKind.ORCH_LEASE_RENEW,
+        agent_id=owner,
+        payload={"op": "lease_renew", "expires_at": claim.expires_at, "ttl_s": ttl},
+        data_dir=_get_data_dir(),
+    )
+
+    if json_out:
+        console.print(json.dumps({
+            "owner": owner,
+            "expires_at": claim.expires_at,
+            "ttl_s": ttl,
+        }, indent=2))
+    else:
+        console.print(f"Lease renewed for {owner} until {claim.expires_at}")
+
+
 @orch_app.command(name="list")
 def orch_list(
     state: str = typer.Option("", "--state", "-s", help="Filter by state"),
@@ -1323,29 +2189,52 @@ def orch_list(
 @app.command(name="watchdog")
 def watchdog_cmd(
     threshold: int = typer.Option(300, "--threshold", "-t", help="Stale threshold in seconds"),
+    spawn_timeout: int = typer.Option(1800, "--spawn-timeout", help="Default spawn timeout in seconds"),
     json_out: bool = typer.Option(False, "--json", help="JSON output"),
 ) -> None:
-    """Run watchdog scan: detect stale agents, reap them, abort their tasks."""
+    """Run watchdog scan: detect stale agents, reap them, abort their tasks, harvest/abort orphaned spawns."""
     _ensure_db()
     from . import watchdog
-    result = watchdog.scan(stale_threshold_s=threshold, data_dir=_get_data_dir())
+    with _orchestrator_lease(json_out=json_out):
+        result = watchdog.scan(
+            stale_threshold_s=threshold,
+            spawn_timeout_s=spawn_timeout,
+            data_dir=_get_data_dir(),
+        )
     if json_out:
         data = {
             "stale_agents": result.stale_agents,
             "reaped_agents": result.reaped_agents,
             "aborted_tasks": result.aborted_tasks,
+            "harvested_spawns": result.harvested_spawns,
+            "timed_out_spawns": result.timed_out_spawns,
+            "cost_exceeded_tasks": result.cost_exceeded_tasks,
+            "cost_exceeded_spawns": result.cost_exceeded_spawns,
             "clean": result.clean,
         }
         console.print(json.dumps(data, indent=2))
     elif result.clean:
-        console.print("[green]Clean[/green] -- no stale agents")
+        console.print("[green]Clean[/green] -- no stale agents or orphaned spawns")
     else:
-        console.print(f"Stale agents: {len(result.stale_agents)}")
-        for a in result.stale_agents:
-            console.print(f"  reaped: {a}")
+        if result.stale_agents:
+            console.print(f"Stale agents: {len(result.stale_agents)}")
+            for a in result.stale_agents:
+                console.print(f"  reaped: {a}")
         if result.aborted_tasks:
             console.print(f"Aborted tasks: {len(result.aborted_tasks)}")
             for t in result.aborted_tasks:
+                console.print(f"  {t}")
+        if result.harvested_spawns:
+            console.print(f"Harvested spawns: {len(result.harvested_spawns)}")
+            for s in result.harvested_spawns:
+                console.print(f"  {s}")
+        if result.timed_out_spawns:
+            console.print(f"Timed-out spawns: {len(result.timed_out_spawns)}")
+            for s in result.timed_out_spawns:
+                console.print(f"  {s}")
+        if result.cost_exceeded_tasks:
+            console.print(f"Cost-exceeded tasks: {len(result.cost_exceeded_tasks)}")
+            for t in result.cost_exceeded_tasks:
                 console.print(f"  {t}")
 
 
@@ -1493,3 +2382,190 @@ def hooks_status_cmd() -> None:
         if not s["settings_configured"]:
             console.print("[red]Settings not configured[/red]")
         console.print("Run [bold]agentmesh hooks install[/bold] to fix")
+
+
+# -- Worker commands (spawner bridge) --
+
+worker_app = typer.Typer(help="Worker lifecycle commands (spawn Claude Code in worktrees).")
+app.add_typer(worker_app, name="worker")
+
+
+@worker_app.command(name="spawn")
+def worker_spawn(
+    task_id: str = typer.Argument(..., help="Orchestrator task ID (must be ASSIGNED)"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent ID"),
+    model: str = typer.Option("sonnet", "--model", "-m", help="Claude model to use"),
+    repo: str = typer.Option(".", "--repo", "-r", help="Repository root path"),
+    timeout: int = typer.Option(0, "--timeout", help="Worker timeout in seconds (0=no timeout)"),
+    backend: str = typer.Option("claude_code", "--backend", "-b", help="Worker backend adapter name"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Spawn a worker in an isolated worktree for a task."""
+    _ensure_db()
+    from . import spawner
+    agent_id = agent or _auto_agent_id()
+    try:
+        record = spawner.spawn(
+            task_id=task_id,
+            agent_id=agent_id,
+            repo_cwd=str(Path(repo).resolve()),
+            model=model,
+            timeout_s=timeout,
+            backend=backend,
+            data_dir=_get_data_dir(),
+        )
+    except spawner.SpawnError as e:
+        console.print(str(e), style="red")
+        raise typer.Exit(1)
+    if json_out:
+        console.print(json.dumps({
+            "spawn_id": record.spawn_id,
+            "task_id": record.task_id,
+            "pid": record.pid,
+            "worktree_path": record.worktree_path,
+            "branch": record.branch,
+            "backend": record.backend,
+            "backend_version": record.backend_version,
+        }, indent=2))
+    else:
+        console.print(f"Spawned [bold]{record.spawn_id}[/bold]  pid={record.pid}")
+        console.print(
+            f"  task={record.task_id}  branch={record.branch}  "
+            f"backend={record.backend}@{record.backend_version or '?'}",
+        )
+        console.print(f"  worktree={record.worktree_path}")
+
+
+@worker_app.command(name="check")
+def worker_check(
+    spawn_id: str = typer.Argument(..., help="Spawn ID to check"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Check liveness of a spawned worker (poll only, no side effects)."""
+    _ensure_db()
+    from . import spawner
+    try:
+        result = spawner.check(spawn_id, data_dir=_get_data_dir())
+    except spawner.SpawnError as e:
+        console.print(str(e), style="red")
+        raise typer.Exit(1)
+    if json_out:
+        console.print(json.dumps({
+            "spawn_id": result.spawn_id,
+            "running": result.running,
+            "exit_code": result.exit_code,
+        }, indent=2))
+    else:
+        status_str = "[green]running[/green]" if result.running else "[dim]exited[/dim]"
+        console.print(f"{result.spawn_id}  {status_str}")
+
+
+@worker_app.command(name="harvest")
+def worker_harvest(
+    spawn_id: str = typer.Argument(..., help="Spawn ID to harvest"),
+    keep_worktree: bool = typer.Option(False, "--keep-worktree", help="Do not remove the worktree"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Collect output from a finished worker and transition task state."""
+    _ensure_db()
+    from . import spawner
+    try:
+        result = spawner.harvest(
+            spawn_id, cleanup_worktree=not keep_worktree, data_dir=_get_data_dir(),
+        )
+    except spawner.SpawnError as e:
+        console.print(str(e), style="red")
+        raise typer.Exit(1)
+    if json_out:
+        console.print(json.dumps({
+            "spawn_id": result.spawn_id,
+            "outcome": result.outcome,
+        }, indent=2))
+    else:
+        style = "green" if result.outcome == "success" else "red"
+        console.print(f"Harvested [bold]{result.spawn_id}[/bold]  [{style}]{result.outcome}[/{style}]")
+
+
+@worker_app.command(name="abort")
+def worker_abort(
+    spawn_id: str = typer.Argument(..., help="Spawn ID to abort"),
+    reason: str = typer.Option("", "--reason", "-r", help="Abort reason"),
+    keep_worktree: bool = typer.Option(False, "--keep-worktree", help="Do not remove the worktree"),
+) -> None:
+    """Abort a running worker: kill process, abort task, clean up."""
+    _ensure_db()
+    from . import spawner
+    try:
+        record = spawner.abort(
+            spawn_id, reason=reason,
+            cleanup_worktree=not keep_worktree, data_dir=_get_data_dir(),
+        )
+    except spawner.SpawnError as e:
+        console.print(str(e), style="red")
+        raise typer.Exit(1)
+    console.print(f"Aborted [bold]{record.spawn_id}[/bold]  task={record.task_id}")
+
+
+@worker_app.command(name="list")
+def worker_list(
+    active: bool = typer.Option(False, "--active", help="Only show active (running) workers"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """List spawned workers."""
+    _ensure_db()
+    from . import spawner
+    records = spawner.list_spawns(active_only=active, data_dir=_get_data_dir())
+    if json_out:
+        data = [
+            {"spawn_id": r.spawn_id, "task_id": r.task_id, "pid": r.pid,
+             "branch": r.branch, "outcome": r.outcome, "ended_at": r.ended_at}
+            for r in records
+        ]
+        console.print(json.dumps(data, indent=2))
+    else:
+        if not records:
+            console.print("[dim]No workers[/dim]")
+            return
+        for r in records:
+            status_str = r.outcome or "running"
+            console.print(f"  {r.spawn_id}  pid={r.pid}  {status_str:10}  {r.branch}")
+
+
+@worker_app.command(name="backends")
+def worker_backends(
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """List registered worker backend adapters."""
+    from .worker_adapters import get_adapter_load_errors, list_adapters
+
+    infos = list_adapters()
+    errors = get_adapter_load_errors()
+
+    if json_out:
+        console.print(json.dumps({
+            "backends": [
+                {
+                    "name": i.name,
+                    "version": i.version,
+                    "module": i.module,
+                    "origin": i.origin,
+                }
+                for i in infos
+            ],
+            "load_errors": errors,
+        }, indent=2))
+        return
+
+    if not infos:
+        console.print("[dim]No worker backends registered[/dim]")
+    for i in infos:
+        console.print(f"  {i.name:18} {i.version or '(no version)'}")
+        if i.module:
+            console.print(f"    module={i.module}")
+        if i.origin:
+            console.print(f"    origin={i.origin}")
+
+    if errors:
+        console.print("[yellow]autoload errors:[/yellow]")
+        for e in errors:
+            console.print(f"  {e}")

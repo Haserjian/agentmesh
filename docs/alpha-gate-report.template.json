@@ -1,0 +1,32 @@
+{
+  "overall_pass": false,
+  "checks": {
+    "merged_task_count": {
+      "pass": false,
+      "actual": 0,
+      "expected_min": 1
+    },
+    "witness_verified_ci": {
+      "pass": false,
+      "required": true,
+      "source": "ci_result"
+    },
+    "full_transition_receipts": {
+      "pass": false,
+      "missing_tasks": [],
+      "state_mismatch_tasks": []
+    },
+    "watchdog_handled_event": {
+      "pass": false
+    },
+    "no_orphan_finalization_loss": {
+      "pass": true,
+      "bad_spawns": []
+    }
+  },
+  "summary": {
+    "tasks_total": 0,
+    "events_total": 0,
+    "spawns_total": 0
+  }
+}

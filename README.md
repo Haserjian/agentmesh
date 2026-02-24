@@ -77,6 +77,40 @@ jobs:
 
 The action posts a sticky PR comment showing commit coverage. Set `require-trailers: "true"` to enforce episode lineage, and `verify-witness: "true"` + `require-witness: "true"` to enforce cryptographic witness verification.
 
+## Documentation Policy
+
+- Public/private split guidance: [`docs/public-private-boundary.md`](./docs/public-private-boundary.md)
+- Decision matrix + release gate: [`docs/public-private-decision-matrix.md`](./docs/public-private-decision-matrix.md)
+- Alpha gate operator runbook: [`docs/alpha-gate-runbook.md`](./docs/alpha-gate-runbook.md)
+- License transition policy: [`docs/license-policy.md`](./docs/license-policy.md)
+
+Generated canary artifacts (CI logs, raw gate reports) should be treated as private by default. Publish sanitized summaries/templates for OSS.
+
+Use the classifier before publishing:
+
+```bash
+agentmesh classify --staged --fail-on-private --fail-on-review
+```
+
+Release preflight (deterministic gate for agents/automation):
+
+```bash
+agentmesh release-check --staged --require-witness --json
+```
+
+Sanitize private alpha gate artifacts before publishing:
+
+```bash
+agentmesh sanitize-alpha-gate-report \
+  --in .agentmesh/runs/alpha-gate-report.json \
+  --out docs/alpha-gate-report.public.json
+```
+
+CI rollout recommendation:
+- Start with non-blocking `release-check` preview artifacts.
+- Keep private-artifact blocking enabled.
+- Switch `release-check` to blocking after policy tuning.
+
 ## License
 
 AgentMesh is licensed under Apache-2.0 for current and future development.

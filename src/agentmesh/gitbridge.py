@@ -126,3 +126,85 @@ def run_tests(command: str, cwd: str | None = None) -> tuple[bool, str]:
         return False, "Test command timed out (300s)"
     except Exception as exc:
         return False, str(exc)
+
+
+# -- Worktree helpers --
+
+
+def create_worktree(
+    branch: str, worktree_path: str, cwd: str | None = None,
+) -> tuple[bool, str]:
+    """Create a git worktree for *branch* at *worktree_path*.
+
+    Creates the branch from HEAD if it doesn't already exist.
+    Returns (success, error_message).
+    """
+    # Ensure branch exists (ignore error if it already does)
+    _run_git_rc(["branch", branch], cwd=cwd)
+
+    rc, _out, err = _run_git_rc(
+        ["worktree", "add", worktree_path, branch], cwd=cwd,
+    )
+    if rc != 0:
+        return False, err
+    return True, ""
+
+
+def remove_worktree(
+    worktree_path: str, cwd: str | None = None, force: bool = False,
+) -> tuple[bool, str]:
+    """Remove a git worktree.
+
+    Falls back to deleting the path directly, then prunes stale registrations.
+    """
+    import shutil
+
+    wt = Path(worktree_path).resolve()
+    prune_cwd = cwd
+    if prune_cwd is None and wt.parent.name == ".worktrees":
+        prune_cwd = str(wt.parent.parent)
+
+    args = ["worktree", "remove", worktree_path]
+    if force:
+        args.append("--force")
+    rc, _out, err = _run_git_rc(args, cwd=cwd)
+    if rc != 0:
+        # Fallback: delete directory directly.
+        try:
+            if wt.exists():
+                shutil.rmtree(wt)
+        except Exception as exc:
+            return False, str(exc)
+        if wt.exists():
+            return False, f"failed to remove worktree path: {wt}"
+
+    if prune_cwd:
+        prune_rc, _prune_out, prune_err = _run_git_rc(["worktree", "prune"], cwd=prune_cwd)
+        if prune_rc != 0:
+            return False, prune_err or "failed to prune worktree registrations"
+    return True, ""
+
+
+def list_worktrees(cwd: str | None = None) -> list[dict[str, str]]:
+    """List worktrees via ``git worktree list --porcelain``.
+
+    Returns list of dicts with keys ``path``, ``branch``, ``head``.
+    """
+    out = _run_git(["worktree", "list", "--porcelain"], cwd=cwd)
+    if not out:
+        return []
+
+    results: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            if current:
+                results.append(current)
+            current = {"path": line.split(" ", 1)[1], "branch": "", "head": ""}
+        elif line.startswith("HEAD "):
+            current["head"] = line.split(" ", 1)[1]
+        elif line.startswith("branch "):
+            current["branch"] = line.split(" ", 1)[1]
+    if current:
+        results.append(current)
+    return results
