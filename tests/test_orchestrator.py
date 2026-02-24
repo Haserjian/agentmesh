@@ -4,6 +4,7 @@ import pytest
 from pathlib import Path
 
 from agentmesh import db, orchestrator
+from agentmesh import orch_control
 from agentmesh.models import Agent, TaskState, _now
 
 
@@ -135,6 +136,23 @@ def test_abort_from_planned(data_dir):
     assert task.state == TaskState.ABORTED
 
 
+def test_merge_transition_blocked_when_merges_locked(data_dir, agent):
+    task = orchestrator.create_task("Lock merges", data_dir=data_dir)
+    orchestrator.assign_task(task.task_id, agent.agent_id, data_dir=data_dir)
+    orchestrator.transition_task(task.task_id, TaskState.RUNNING, data_dir=data_dir)
+    orchestrator.transition_task(task.task_id, TaskState.PR_OPEN, data_dir=data_dir)
+    orchestrator.transition_task(task.task_id, TaskState.CI_PASS, data_dir=data_dir)
+    orchestrator.transition_task(task.task_id, TaskState.REVIEW_PASS, data_dir=data_dir)
+
+    owner = orch_control.make_owner("test")
+    orch_control.set_merges_locked(True, owner=owner, data_dir=data_dir)
+    try:
+        with pytest.raises(orchestrator.TransitionError, match="merge transitions are locked"):
+            orchestrator.transition_task(task.task_id, TaskState.MERGED, data_dir=data_dir)
+    finally:
+        orch_control.set_merges_locked(False, owner=owner, data_dir=data_dir)
+
+
 # -- Receipt emission --
 
 def test_each_transition_emits_weave(data_dir, agent):
@@ -177,3 +195,39 @@ def test_list_tasks_by_agent(data_dir, agent):
     mine = db.list_tasks(data_dir=data_dir, assigned_agent_id=agent.agent_id)
     assert len(mine) == 1
     assert mine[0].task_id == t1.task_id
+
+
+def test_create_task_rejects_unknown_dependency(data_dir):
+    with pytest.raises(orchestrator.TransitionError, match="unknown dependencies"):
+        orchestrator.create_task(
+            "Needs other",
+            depends_on=["task_missing_123"],
+            data_dir=data_dir,
+        )
+
+
+def test_assign_blocked_until_dependencies_ready(data_dir, agent):
+    dep = orchestrator.create_task("dep", data_dir=data_dir)
+    orchestrator.assign_task(dep.task_id, agent.agent_id, data_dir=data_dir)
+    orchestrator.transition_task(dep.task_id, TaskState.RUNNING, data_dir=data_dir)
+
+    task = orchestrator.create_task(
+        "main",
+        depends_on=[dep.task_id],
+        data_dir=data_dir,
+    )
+    with pytest.raises(orchestrator.TransitionError, match="unresolved dependencies"):
+        orchestrator.assign_task(task.task_id, agent.agent_id, data_dir=data_dir)
+
+    orchestrator.transition_task(dep.task_id, TaskState.PR_OPEN, data_dir=data_dir)
+    assigned = orchestrator.assign_task(task.task_id, agent.agent_id, data_dir=data_dir)
+    assert assigned.state == TaskState.ASSIGNED
+
+
+def test_set_task_dependencies_detects_cycle(data_dir):
+    a = orchestrator.create_task("A", data_dir=data_dir)
+    b = orchestrator.create_task("B", data_dir=data_dir)
+
+    orchestrator.set_task_dependencies(a.task_id, [b.task_id], data_dir=data_dir)
+    with pytest.raises(orchestrator.TransitionError, match="cycle detected"):
+        orchestrator.set_task_dependencies(b.task_id, [a.task_id], data_dir=data_dir)

@@ -257,3 +257,70 @@ def test_weave_verify_beyond_100_events(tmp_data_dir: Path) -> None:
     # Verify passes on full chain
     valid, err = verify_weave(tmp_data_dir)
     assert valid, err
+
+
+def test_cli_commit_emits_assay_receipt_event(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    (repo / ".agentmesh").mkdir(parents=True, exist_ok=True)
+    (repo / ".agentmesh" / "policy.json").write_text(
+        '{"assay":{"emit_on_commit":true,"command":"python -c \\"print(123)\\""}}'
+    )
+    (repo / "with_assay.py").write_text("print('x')\n")
+    subprocess.run(["git", "add", "with_assay.py"], cwd=str(repo), capture_output=True, check=True)
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "assay_agent")
+    result = runner.invoke(app, ["commit", "-m", "with assay", "--no-episode-trailer"])
+    assert result.exit_code == 0, result.output
+
+    evts = events.read_events(data_dir=tmp_data_dir)
+    assay_evts = [e for e in evts if e.kind == EventKind.ASSAY_RECEIPT]
+    assert len(assay_evts) == 1
+    assert assay_evts[0].payload["ok"] is True
+
+
+def test_cli_commit_assay_failure_is_non_blocking_by_default(
+    tmp_path: Path,
+    tmp_data_dir: Path,
+    monkeypatch,
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    (repo / ".agentmesh").mkdir(parents=True, exist_ok=True)
+    (repo / ".agentmesh" / "policy.json").write_text(
+        '{"assay":{"emit_on_commit":true,"command":"false","required":false}}'
+    )
+    (repo / "assay_fail.py").write_text("print('x')\n")
+    subprocess.run(["git", "add", "assay_fail.py"], cwd=str(repo), capture_output=True, check=True)
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "assay_agent")
+    result = runner.invoke(app, ["commit", "-m", "assay fails", "--no-episode-trailer"])
+    assert result.exit_code == 0, result.output
+
+    evts = events.read_events(data_dir=tmp_data_dir)
+    assay_evts = [e for e in evts if e.kind == EventKind.ASSAY_RECEIPT]
+    assert len(assay_evts) == 1
+    assert assay_evts[0].payload["ok"] is False
+
+
+def test_cli_commit_assay_required_fails_command(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    (repo / ".agentmesh").mkdir(parents=True, exist_ok=True)
+    (repo / ".agentmesh" / "policy.json").write_text(
+        '{"assay":{"emit_on_commit":true,"command":"false","required":true}}'
+    )
+    (repo / "assay_required.py").write_text("print('x')\n")
+    subprocess.run(["git", "add", "assay_required.py"], cwd=str(repo), capture_output=True, check=True)
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "assay_agent")
+    result = runner.invoke(app, ["commit", "-m", "assay required", "--no-episode-trailer"])
+    assert result.exit_code == 1
+
+    evts = events.read_events(data_dir=tmp_data_dir)
+    assay_evts = [e for e in evts if e.kind == EventKind.ASSAY_RECEIPT]
+    assert len(assay_evts) == 1
+    assert assay_evts[0].payload["ok"] is False

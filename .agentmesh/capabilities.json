@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "tool_name": "agentmesh",
-  "tool_version": "0.4.0",
+  "tool_version": "0.7.0",
   "recommended_defaults": {
     "commit_via_agentmesh": true,
     "capsule_on_finish": true,
@@ -33,7 +33,9 @@
     "message.inbox": "agentmesh inbox [--agent <id>] [--unread] [--channel <name>] [--severity <...>] [--limit <n>]",
     "mesh.status": "agentmesh status [--json] [--watch]",
     "mesh.gc": "agentmesh gc [--dry-run] [--max-age <hours>]",
-    "git.commit": "agentmesh commit -m <msg> [--agent <id>] [--episode-trailer|--no-episode-trailer] [--run-tests <cmd>] [--capsule]",
+    "git.commit": "agentmesh commit -m <msg> [--agent <id>] [--episode-trailer|--no-episode-trailer] [--run-tests <cmd>] [--capsule] [--emit-assay]",
+    "public_private.classify": "agentmesh classify [<path> ...] [--staged] [--json] [--fail-on-private] [--fail-on-review]",
+    "release.check": "agentmesh release-check [--staged|--all] [--require-witness] [--run-tests <cmd>] [--json]",
     "capsule.emit": "agentmesh bundle emit [--agent <id>] [--task <desc>]",
     "capsule.get": "agentmesh bundle get <capsule_id> [--json] [--sbar]",
     "weave.record": "agentmesh weave record [--capsule-id <id>] [--commit <sha>] [--patch-hash <sha256:...>] [--symbols <csv>] [--trace-id <id>] [--parent <event_id>]",
@@ -55,6 +57,8 @@
     "Prefer task.start/task.finish for basic workflows.",
     "Before editing shared files, claim resources first.",
     "Treat weave verify failures as blocking.",
+    "Before publishing docs/artifacts, run `agentmesh classify --staged --json` and resolve `private`/`review` items.",
+    "Before release/PR finalization, run `agentmesh release-check --staged --json`.",
     "When a command fails, report stderr and propose exact retry command."
   ]
 }
