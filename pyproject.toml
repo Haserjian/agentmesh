@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentmesh"
+version = "0.1.0"
+description = "Local-first multi-agent coordination substrate"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "pydantic>=2.0",
+    "typer>=0.9",
+    "rich>=13.0",
+]
+
+[project.scripts]
+agentmesh = "agentmesh.cli:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-tmp-files>=0.0.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentmesh"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
