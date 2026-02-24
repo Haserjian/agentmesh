@@ -426,6 +426,78 @@ def episode_end() -> None:
     console.print(f"Episode [bold]{ep_id}[/bold] ended")
 
 
+# -- Weave commands --
+
+weave_app = typer.Typer(help="Provenance weave commands.")
+app.add_typer(weave_app, name="weave")
+
+
+@weave_app.command(name="record")
+def weave_record(
+    capsule_id: str = typer.Option("", "--capsule-id", "-c"),
+    commit: str = typer.Option("", "--commit", help="Git commit SHA"),
+    patch_hash: str = typer.Option("", "--patch-hash"),
+    symbols: Optional[str] = typer.Option(None, "--symbols", "-s", help="Comma-separated affected symbols"),
+    trace_id: str = typer.Option("", "--trace-id"),
+    parent: str = typer.Option("", "--parent", "-p", help="Parent event ID"),
+) -> None:
+    """Record a provenance weave event."""
+    _ensure_db()
+    from . import weaver
+    syms = [s.strip() for s in symbols.split(",")] if symbols else []
+    evt = weaver.append_weave(
+        capsule_id=capsule_id, git_commit_sha=commit,
+        git_patch_hash=patch_hash, affected_symbols=syms,
+        trace_id=trace_id, parent_event_id=parent,
+        data_dir=_get_data_dir(),
+    )
+    console.print(f"Weave [bold]{evt.event_id}[/bold] recorded")
+
+
+@weave_app.command(name="verify")
+def weave_verify() -> None:
+    """Verify the weave hash chain."""
+    _ensure_db()
+    from . import weaver
+    valid, err = weaver.verify_weave(_get_data_dir())
+    if valid:
+        console.print("[green]Weave chain valid[/green]")
+    else:
+        console.print(f"[red]Weave chain BROKEN[/red]: {err}")
+        raise typer.Exit(1)
+
+
+@weave_app.command(name="trace")
+def weave_trace(
+    path: str = typer.Argument(..., help="File path to trace"),
+) -> None:
+    """Trace provenance for a file."""
+    _ensure_db()
+    from . import weaver
+    evts = weaver.trace_file(path, data_dir=_get_data_dir())
+    if not evts:
+        console.print(f"[dim]No weave events for {path}[/dim]")
+        return
+    for e in evts:
+        console.print(f"  {e.event_id}  commit={e.git_commit_sha or '-'}  capsule={e.capsule_id or '-'}")
+
+
+@weave_app.command(name="export")
+def weave_export(
+    md: bool = typer.Option(False, "--md", help="Export as Markdown"),
+    episode: Optional[str] = typer.Option(None, "--episode", "-e"),
+) -> None:
+    """Export weave events."""
+    _ensure_db()
+    from . import weaver
+    if md:
+        output = weaver.export_weave_md(episode_id=episode, data_dir=_get_data_dir())
+        console.print(output)
+    else:
+        evts = db.list_weave_events(_get_data_dir(), episode_id=episode)
+        console.print(json.dumps([e.model_dump() for e in evts], indent=2))
+
+
 # -- Hooks commands --
 
 hooks_app = typer.Typer(help="Claude Code hook management.")
