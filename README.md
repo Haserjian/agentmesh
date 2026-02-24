@@ -79,4 +79,6 @@ The action posts a sticky PR comment showing commit coverage. Set `require-trail
 
 ## License
 
-MIT
+AgentMesh is licensed under Apache-2.0 for current and future development.
+
+Published releases up to and including `v0.7.0` remain under MIT as originally released.
