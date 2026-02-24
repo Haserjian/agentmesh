@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -121,8 +122,9 @@ def _write_scaffold_file(path: Path, content: str, force: bool) -> str:
     return "updated" if existed else "created"
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
     data_dir: Optional[str] = typer.Option(None, "--data-dir", envvar="AGENTMESH_DATA_DIR",
                                            help="Override data directory"),
     version: bool = typer.Option(False, "--version", "-V", help="Show version"),
@@ -133,6 +135,9 @@ def main(
     if version:
         console.print(f"agentmesh {__version__}")
         raise typer.Exit()
+    if ctx.invoked_subcommand is None:
+        console.print(ctx.get_help())
+        console.print("\n[dim]New here? Start with:[/dim] [bold]agentmesh init[/bold]")
 
 
 @app.command(name="init")
@@ -486,6 +491,87 @@ def status_cmd(
             pass
     else:
         status.render_status(data_dir=_get_data_dir(), console=console)
+
+
+# -- Doctor command --
+
+@app.command(name="doctor")
+def doctor_cmd() -> None:
+    """Check environment and report what needs fixing."""
+    import subprocess
+    ok_count = 0
+    warn_count = 0
+
+    def ok(msg: str) -> None:
+        nonlocal ok_count
+        ok_count += 1
+        console.print(f"  [green]OK[/green]  {msg}")
+
+    def warn(msg: str, fix: str) -> None:
+        nonlocal warn_count
+        warn_count += 1
+        console.print(f"  [yellow]WARN[/yellow]  {msg}")
+        console.print(f"         [dim]Fix: {fix}[/dim]")
+
+    def fail(msg: str, fix: str) -> None:
+        nonlocal warn_count
+        warn_count += 1
+        console.print(f"  [red]FAIL[/red]  {msg}")
+        console.print(f"         [dim]Fix: {fix}[/dim]")
+
+    console.print("[bold]agentmesh doctor[/bold]\n")
+
+    # 1. Git repo check
+    try:
+        subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True, check=True)
+        ok("Inside a git repository")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        fail("Not inside a git repository", "cd into a git repo first")
+
+    # 2. Initialized check
+    am_dir = Path.cwd() / ".agentmesh"
+    if am_dir.is_dir():
+        ok(".agentmesh/ directory exists")
+    else:
+        fail("AgentMesh not initialized in this repo", "agentmesh init")
+
+    # 3. Policy file check
+    policy_path = am_dir / "policy.json"
+    if policy_path.is_file():
+        ok("policy.json present")
+    else:
+        warn("No policy.json found", "agentmesh init")
+
+    # 4. Hooks check
+    from .hooks.install import hooks_status as _hooks_status
+    hs = _hooks_status()
+    if hs.get("installed"):
+        ok("Claude Code hooks installed")
+    else:
+        warn("Claude Code hooks not installed", "agentmesh hooks install")
+
+    # 5. jq check (needed for agentmesh-action in CI)
+    jq_found = shutil.which("jq") is not None
+    if jq_found:
+        ok("jq available (used by agentmesh-action)")
+    else:
+        warn("jq not found (optional, used by agentmesh-action in CI)", "brew install jq")
+
+    # 6. Active episode check
+    data_dir = _get_data_dir()
+    try:
+        db.init_db(data_dir)
+        ep = db.get_current_episode(data_dir)
+        if ep:
+            ok(f"Active episode: {ep.episode_id}")
+        else:
+            warn("No active episode", "agentmesh episode start --title 'my task'")
+    except Exception:
+        warn("Could not read database", "agentmesh init")
+
+    console.print(f"\n  {ok_count} passed, {warn_count} issues")
+    if warn_count == 0:
+        console.print("  [green]Everything looks good.[/green]")
 
 
 # -- Bundle commands --
