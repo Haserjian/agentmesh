@@ -60,6 +60,31 @@ def _ensure_db() -> None:
     db.init_db(_get_data_dir())
 
 
+def _ensure_agent_exists(agent_id: str) -> None:
+    """Ensure the agent exists for claim operations (claims have FK to agents)."""
+    if db.get_agent(agent_id, _get_data_dir()) is not None:
+        return
+    now = _now()
+    a = Agent(
+        agent_id=agent_id,
+        kind=AgentKind.CLAUDE_CODE,
+        display_name=agent_id,
+        cwd=os.getcwd(),
+        pid=os.getpid(),
+        tty=os.environ.get("TTY", ""),
+        status=AgentStatus.IDLE,
+        registered_at=now,
+        last_heartbeat=now,
+    )
+    db.register_agent(a, _get_data_dir())
+    events.append_event(
+        EventKind.REGISTER,
+        agent_id=agent_id,
+        payload={"kind": AgentKind.CLAUDE_CODE.value, "name": agent_id, "cwd": os.getcwd()},
+        data_dir=_get_data_dir(),
+    )
+
+
 @app.callback()
 def main(
     data_dir: Optional[str] = typer.Option(None, "--data-dir", envvar="AGENTMESH_DATA_DIR",
@@ -151,6 +176,7 @@ def claim(
     """Claim resources for editing. Supports file paths and typed resources (PORT:3000, LOCK:npm)."""
     _ensure_db()
     agent_id = agent or _auto_agent_id()
+    _ensure_agent_exists(agent_id)
     claim_intent = ClaimIntent(intent)
     had_conflict = False
     for p in resources:
@@ -604,6 +630,122 @@ def commit_cmd(
 
     console.print(f"Committed [bold]{sha[:10]}[/bold]  weave={evt.event_id}")
     console.print(f"  {len(staged_files)} file(s): {', '.join(staged_files[:5])}")
+
+
+# -- Task commands (happy-path wrappers) --
+
+task_app = typer.Typer(help="Happy-path task workflow commands.")
+app.add_typer(task_app, name="task")
+
+
+@task_app.command(name="start")
+def task_start(
+    title: str = typer.Option(..., "--title", "-t", help="Task title for the episode"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent ID"),
+    claim_resources: list[str] = typer.Option(
+        [],
+        "--claim",
+        "-c",
+        help="Resource to claim (repeat for multiple resources)",
+    ),
+    ttl: int = typer.Option(1800, "--ttl", help="Claim TTL in seconds"),
+    reuse_current: bool = typer.Option(
+        True,
+        "--reuse-current/--new-episode",
+        help="Reuse current episode if one is active",
+    ),
+) -> None:
+    """Start a task: ensure an episode exists and optionally claim resources."""
+    _ensure_db()
+    agent_id = agent or _auto_agent_id()
+    _ensure_agent_exists(agent_id)
+
+    ep_id = episodes.get_current_episode(_get_data_dir()) if reuse_current else ""
+    created_new = False
+    if not ep_id:
+        ep_id = episodes.start_episode(title=title, data_dir=_get_data_dir())
+        events.append_event(
+            EventKind.EPISODE_START,
+            payload={"episode_id": ep_id, "title": title},
+            data_dir=_get_data_dir(),
+        )
+        created_new = True
+
+    if created_new:
+        console.print(f"Episode [bold]{ep_id}[/bold] started")
+    else:
+        console.print(f"Using episode [bold]{ep_id}[/bold]")
+
+    if not claim_resources:
+        console.print("[dim]No claims requested[/dim]")
+        return
+
+    had_conflict = False
+    for resource in claim_resources:
+        ok, clm, conflicts = claims.make_claim(
+            agent_id,
+            resource,
+            intent=ClaimIntent.EDIT,
+            ttl_s=ttl,
+            reason=f"task:{title}",
+            data_dir=_get_data_dir(),
+        )
+        if ok:
+            rt_label = clm.resource_type.value.upper() if clm.resource_type.value != "file" else ""
+            prefix = f"[{rt_label}] " if rt_label else ""
+            console.print(f"Claimed {prefix}[bold]{clm.path}[/bold] (ttl={ttl}s)")
+        else:
+            had_conflict = True
+            console.print(f"CONFLICT on [bold]{resource}[/bold]:", style="red bold")
+            console.print(claims.format_conflict(conflicts))
+    if had_conflict:
+        raise typer.Exit(1)
+
+
+@task_app.command(name="finish")
+def task_finish(
+    message: str = typer.Option(..., "--message", "-m", help="Commit message"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent ID"),
+    run_tests: Optional[str] = typer.Option(None, "--run-tests", help="Test command to run before commit"),
+    capsule: bool = typer.Option(True, "--capsule/--no-capsule", help="Emit a context capsule with the commit"),
+    release_all: bool = typer.Option(
+        True,
+        "--release-all/--keep-claims",
+        help="Release all claims held by this agent after commit",
+    ),
+    end_episode: bool = typer.Option(
+        True,
+        "--end-episode/--keep-episode",
+        help="End the current episode after commit",
+    ),
+) -> None:
+    """Finish a task: commit with provenance, optionally release claims and end episode."""
+    _ensure_db()
+    agent_id = agent or _auto_agent_id()
+
+    commit_cmd(
+        message=message,
+        agent=agent_id,
+        episode_trailer=True,
+        run_tests=run_tests,
+        capsule=capsule,
+    )
+
+    if release_all:
+        released = claims.release(agent_id, release_all=True, data_dir=_get_data_dir())
+        console.print(f"Released {released} claim(s)")
+
+    if end_episode:
+        ep_id = episodes.end_episode(_get_data_dir())
+        if ep_id:
+            events.append_event(
+                EventKind.EPISODE_END,
+                payload={"episode_id": ep_id},
+                data_dir=_get_data_dir(),
+            )
+            console.print(f"Episode [bold]{ep_id}[/bold] ended")
+        else:
+            console.print("[dim]No active episode to end[/dim]")
 
 
 # -- Weave commands --

@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0",
+  "tool_name": "agentmesh",
+  "tool_version": "0.4.0",
+  "recommended_defaults": {
+    "commit_via_agentmesh": true,
+    "capsule_on_finish": true,
+    "end_episode_on_finish": true,
+    "release_claims_on_finish": true
+  },
+  "happy_path": {
+    "start": "agentmesh task start --title <task_title> [--claim <resource> ...]",
+    "finish": "agentmesh task finish --message <msg> [--run-tests <cmd>]"
+  },
+  "commands": {
+    "agent.register": "agentmesh register [--agent <id>] [--kind <claude_code|codex|custom>] [--name <display_name>]",
+    "agent.heartbeat": "agentmesh heartbeat [--agent <id>] [--status <idle|busy|blocked|gone>]",
+    "agent.deregister": "agentmesh deregister [--agent <id>]",
+    "task.start": "agentmesh task start --title <title> [--claim <resource> ...] [--ttl <seconds>] [--reuse-current|--new-episode]",
+    "task.finish": "agentmesh task finish --message <msg> [--run-tests <cmd>] [--capsule|--no-capsule] [--release-all|--keep-claims] [--end-episode|--keep-episode]",
+    "episode.start": "agentmesh episode start --title <title> [--parent <episode_id>]",
+    "episode.current": "agentmesh episode current",
+    "episode.end": "agentmesh episode end",
+    "episode.export": "agentmesh episode export <episode_id> [--out <path>]",
+    "episode.import": "agentmesh episode import <meshpack_path> [--namespace <prefix>]",
+    "episode.verify": "agentmesh episode verify <meshpack_path>",
+    "resource.claim": "agentmesh claim <resource ...> [--agent <id>] [--ttl <seconds>] [--intent <edit|read|test|review>] [--reason <text>] [--force]",
+    "resource.release": "agentmesh release <path ...> [--agent <id>] | agentmesh release --all [--agent <id>]",
+    "resource.check": "agentmesh check <path> [--agent <id>] [--json]",
+    "resource.wait": "agentmesh wait <resource> [--agent <id>] [--priority 1-10] [--reason <text>]",
+    "resource.steal": "agentmesh steal <resource> [--agent <id>] [--reason <text>] [--priority 1-10] [--stale-threshold <seconds>]",
+    "message.post": "agentmesh msg <text> [--agent <id>] [--to <agent_id>] [--severity <FYI|ATTN|BLOCKER|HANDOFF>] [--channel <name>]",
+    "message.inbox": "agentmesh inbox [--agent <id>] [--unread] [--channel <name>] [--severity <...>] [--limit <n>]",
+    "mesh.status": "agentmesh status [--json] [--watch]",
+    "mesh.gc": "agentmesh gc [--dry-run] [--max-age <hours>]",
+    "git.commit": "agentmesh commit -m <msg> [--agent <id>] [--episode-trailer|--no-episode-trailer] [--run-tests <cmd>] [--capsule]",
+    "capsule.emit": "agentmesh bundle emit [--agent <id>] [--task <desc>]",
+    "capsule.get": "agentmesh bundle get <capsule_id> [--json] [--sbar]",
+    "weave.record": "agentmesh weave record [--capsule-id <id>] [--commit <sha>] [--patch-hash <sha256:...>] [--symbols <csv>] [--trace-id <id>] [--parent <event_id>]",
+    "weave.verify": "agentmesh weave verify",
+    "weave.trace": "agentmesh weave trace <path>",
+    "weave.export": "agentmesh weave export [--md] [--episode <episode_id>]",
+    "hooks.install": "agentmesh hooks install",
+    "hooks.status": "agentmesh hooks status",
+    "hooks.uninstall": "agentmesh hooks uninstall"
+  },
+  "resource_prefixes": [
+    "PORT:<number>",
+    "LOCK:<name>",
+    "TEST_SUITE:<name>",
+    "TEMP_DIR:<path>",
+    "<file_path>"
+  ],
+  "agent_guidance": [
+    "Prefer task.start/task.finish for basic workflows.",
+    "Before editing shared files, claim resources first.",
+    "Treat weave verify failures as blocking.",
+    "When a command fails, report stderr and propose exact retry command."
+  ]
+}
