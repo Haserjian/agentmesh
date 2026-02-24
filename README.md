@@ -4,6 +4,12 @@ Local-first multi-agent coordination and provenance for coding workflows.
 
 AgentMesh adds deterministic coordination (claims, waits, steals), commit-linked lineage (`AgentMesh-Episode` trailers + weave events), and portable handoff bundles (`.meshpack`) on top of normal git workflows.
 
+## Install
+
+```bash
+pip install agentmesh-core
+```
+
 ## Quick Start
 
 ```bash
