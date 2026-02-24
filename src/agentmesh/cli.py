@@ -13,7 +13,7 @@ from rich.console import Console
 
 from . import __version__
 from .models import Agent, AgentKind, AgentStatus, ClaimIntent, EventKind, Severity, _now
-from . import db, events, claims, messages, status, capsules, episodes
+from . import db, events, claims, messages, status, capsules, episodes, gitbridge, weaver
 
 app = typer.Typer(name="agentmesh", help="Local-first multi-agent coordination substrate.")
 console = Console()
@@ -523,6 +523,81 @@ def steal(
     else:
         console.print(f"Steal failed: {msg_text}", style="red")
         raise typer.Exit(1)
+
+
+# -- Commit command (git-weave bridge) --
+
+@app.command(name="commit")
+def commit_cmd(
+    message: str = typer.Option(..., "--message", "-m", help="Commit message"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a"),
+    episode_trailer: bool = typer.Option(True, "--episode-trailer/--no-episode-trailer",
+                                         help="Append episode ID trailer to commit message"),
+    run_tests: Optional[str] = typer.Option(None, "--run-tests", help="Test command to run before commit"),
+    capsule: bool = typer.Option(False, "--capsule", help="Also emit a context capsule"),
+) -> None:
+    """Wrap git commit with provenance: auto-creates a weave event linking the commit to the episode."""
+    _ensure_db()
+    agent_id = agent or _auto_agent_id()
+    cwd = os.getcwd()
+
+    if not gitbridge.is_git_repo(cwd):
+        console.print("Not a git repository", style="red")
+        raise typer.Exit(1)
+
+    staged_files = gitbridge.get_staged_files(cwd)
+    if not staged_files:
+        console.print("Nothing staged to commit", style="red")
+        raise typer.Exit(1)
+
+    patch_hash = gitbridge.compute_patch_hash(gitbridge.get_staged_diff(cwd))
+
+    if run_tests:
+        console.print(f"Running tests: {run_tests}")
+        passed, summary = gitbridge.run_tests(run_tests, cwd=cwd)
+        if not passed:
+            console.print(f"Tests failed, aborting commit:\n{summary}", style="red")
+            raise typer.Exit(1)
+        console.print("[green]Tests passed[/green]")
+
+    # Build trailer
+    trailer = ""
+    if episode_trailer:
+        ep_id = episodes.get_current_episode(_get_data_dir())
+        if ep_id:
+            trailer = f"AgentMesh-Episode: {ep_id}"
+
+    ok, sha, err = gitbridge.git_commit(message, trailer=trailer, cwd=cwd)
+    if not ok:
+        console.print(f"git commit failed: {err}", style="red")
+        raise typer.Exit(1)
+
+    # Weave event
+    evt = weaver.append_weave(
+        git_commit_sha=sha,
+        git_patch_hash=patch_hash,
+        affected_symbols=staged_files,
+        data_dir=_get_data_dir(),
+    )
+
+    # Capsule if requested
+    if capsule:
+        capsules.build_capsule(agent_id, task_desc=message, cwd=cwd, data_dir=_get_data_dir())
+
+    # Event log
+    events.append_event(
+        EventKind.COMMIT, agent_id=agent_id,
+        payload={
+            "sha": sha,
+            "patch_hash": patch_hash,
+            "files": staged_files,
+            "weave_event_id": evt.event_id,
+        },
+        data_dir=_get_data_dir(),
+    )
+
+    console.print(f"Committed [bold]{sha[:10]}[/bold]  weave={evt.event_id}")
+    console.print(f"  {len(staged_files)} file(s): {', '.join(staged_files[:5])}")
 
 
 # -- Weave commands --

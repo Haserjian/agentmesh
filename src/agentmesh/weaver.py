@@ -150,4 +150,21 @@ def export_weave_md(
         lines.append(f"- **hash**: `{evt.event_hash[:20]}...`")
         lines.append("")
 
+    # Files Changed summary table (aggregate affected_symbols by file)
+    file_commits: dict[str, list[str]] = {}
+    for evt in events:
+        sha = evt.git_commit_sha
+        if not sha:
+            continue
+        for sym in evt.affected_symbols:
+            file_commits.setdefault(sym, []).append(sha[:8])
+    if file_commits:
+        lines.append("## Files Changed\n")
+        lines.append("| File | Commits |")
+        lines.append("|------|---------|")
+        for fpath in sorted(file_commits):
+            shas = ", ".join(file_commits[fpath])
+            lines.append(f"| `{fpath}` | {shas} |")
+        lines.append("")
+
     return "\n".join(lines)
