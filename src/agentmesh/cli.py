@@ -13,7 +13,7 @@ from rich.console import Console
 
 from . import __version__
 from .models import Agent, AgentKind, AgentStatus, ClaimIntent, EventKind, Severity, _now
-from . import db, events, claims, messages, status
+from . import db, events, claims, messages, status, capsules
 
 app = typer.Typer(name="agentmesh", help="Local-first multi-agent coordination substrate.")
 console = Console()
@@ -282,3 +282,45 @@ def status_cmd(
             pass
     else:
         status.render_status(data_dir=_get_data_dir(), console=console)
+
+
+# -- Bundle commands --
+
+bundle_app = typer.Typer(help="Context capsule commands.")
+app.add_typer(bundle_app, name="bundle")
+
+
+@bundle_app.command(name="emit")
+def bundle_emit(
+    agent: Optional[str] = typer.Option(None, "--agent", "-a"),
+    task: str = typer.Option("", "--task", "-t", help="Task description"),
+) -> None:
+    """Emit a context capsule."""
+    _ensure_db()
+    agent_id = agent or _auto_agent_id()
+    cap = capsules.build_capsule(agent_id, task_desc=task, data_dir=_get_data_dir())
+    console.print(f"Capsule [bold]{cap.capsule_id}[/bold] created")
+    console.print(f"  branch={cap.git_branch} sha={cap.git_sha}")
+
+
+@bundle_app.command(name="get")
+def bundle_get(
+    capsule_id: str = typer.Argument(..., help="Capsule ID"),
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+) -> None:
+    """Get a context capsule."""
+    _ensure_db()
+    bundle = capsules.get_capsule_bundle(capsule_id, data_dir=_get_data_dir())
+    if bundle is None:
+        console.print(f"Capsule [bold]{capsule_id}[/bold] not found", style="red")
+        raise typer.Exit(1)
+    if json_out:
+        console.print(json.dumps(bundle, indent=2))
+    else:
+        console.print(f"Capsule: [bold]{capsule_id}[/bold]")
+        console.print(f"  Agent: {bundle['agent_id']}")
+        console.print(f"  Task: {bundle.get('task_desc', '')}")
+        git = bundle.get("git", {})
+        console.print(f"  Branch: {git.get('branch', '')}  SHA: {git.get('sha', '')}")
+        mesh = bundle.get("mesh", {})
+        console.print(f"  Claims: {len(mesh.get('open_claims', []))}  Agents: {len(mesh.get('active_agents', []))}")
