@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -992,3 +993,84 @@ def test_harvest_unknown_backend_fails_closed(tmp_path: Path) -> None:
     assert result.output_data["error"] == "unknown_backend"
     t = db.get_task(task_id, data_dir)
     assert t.state == TaskState.ABORTED
+
+
+# ---------------------------------------------------------------------------
+# Worker runtime env sanitization (build_child_env)
+# ---------------------------------------------------------------------------
+
+def test_build_child_env_strips_claudecode() -> None:
+    """build_child_env strips CLAUDECODE from subprocess env by default."""
+    from agentmesh.spawner import build_child_env
+
+    sentinel = "test_nested_guard"
+    with patch.dict(os.environ, {"CLAUDECODE": sentinel, "PATH": "/usr/bin"}):
+        env, stripped = build_child_env()
+
+    assert "CLAUDECODE" not in env
+    assert "CLAUDECODE" in stripped
+    assert env["PATH"] == "/usr/bin"
+
+
+def test_build_child_env_does_not_mutate_parent() -> None:
+    """build_child_env must copy os.environ, never mutate it."""
+    from agentmesh.spawner import build_child_env
+
+    with patch.dict(os.environ, {"CLAUDECODE": "1"}):
+        env_before = dict(os.environ)
+        build_child_env()
+        env_after = dict(os.environ)
+
+    assert env_before == env_after, "build_child_env mutated os.environ"
+
+
+def test_build_child_env_policy_strip() -> None:
+    """Policy worker_runtime.strip_env extends the default deny set."""
+    from agentmesh.spawner import build_child_env
+
+    policy = {"worker_runtime": {"strip_env": ["MY_SECRET_VAR"]}}
+    with patch.dict(os.environ, {"CLAUDECODE": "1", "MY_SECRET_VAR": "s3cret", "KEEP": "yes"}):
+        env, stripped = build_child_env(policy=policy)
+
+    assert "CLAUDECODE" not in env
+    assert "MY_SECRET_VAR" not in env
+    assert "KEEP" in env
+    assert sorted(stripped) == ["CLAUDECODE", "MY_SECRET_VAR"]
+
+
+def test_build_child_env_spec_env_wins() -> None:
+    """Adapter spec.env overrides after sanitization (deliberate re-inject)."""
+    from agentmesh.spawner import build_child_env
+
+    with patch.dict(os.environ, {"CLAUDECODE": "1"}):
+        env, stripped = build_child_env(spec_env={"CLAUDECODE": "override"})
+
+    assert env["CLAUDECODE"] == "override"
+    assert "CLAUDECODE" in stripped
+
+
+def test_spawn_emits_env_sanitized_event(tmp_path: Path) -> None:
+    """WORKER_SPAWN event includes env_sanitized and stripped_keys fields."""
+    repo = _init_repo(tmp_path)
+    data_dir = _setup_orch(tmp_path)
+    task_id = _make_assigned_task(data_dir, branch="feat/env-sanitize")
+
+    from agentmesh import spawner
+
+    with patch.dict(os.environ, {"CLAUDECODE": "nested"}):
+        with patch("subprocess.Popen", FakePopen):
+            with patch.object(spawner, "create_worktree", return_value=(True, "")):
+                spawner.spawn(
+                    task_id=task_id,
+                    agent_id="agent_spawn",
+                    repo_cwd=str(repo),
+                    data_dir=data_dir,
+                )
+
+    all_events = events.read_events(data_dir=data_dir)
+    spawn_events = [e for e in all_events if e.kind == EventKind.WORKER_SPAWN]
+    assert len(spawn_events) >= 1
+    payload = spawn_events[-1].payload
+
+    assert payload["env_sanitized"] is True
+    assert "CLAUDECODE" in payload["stripped_keys"]

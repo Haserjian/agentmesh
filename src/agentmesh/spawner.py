@@ -156,6 +156,48 @@ def _verification_command(task_meta: dict[str, Any], repo_cwd: str) -> str:
     return ""
 
 
+_DEFAULT_STRIP_ENV: frozenset[str] = frozenset({
+    "CLAUDECODE",  # Claude Code nested-session guard
+})
+
+
+def build_child_env(
+    *,
+    spec_env: dict[str, str] | None = None,
+    policy: dict[str, Any] | None = None,
+) -> tuple[dict[str, str], list[str]]:
+    """Build a sanitized environment for a worker subprocess.
+
+    Merge order (deterministic):
+      1. Copy parent ``os.environ``
+      2. Remove denylisted keys (default + policy ``worker_runtime.strip_env``)
+      3. Apply adapter ``spec_env`` overrides
+
+    Returns (env_dict, stripped_keys) -- stripped_keys is keys only, never values.
+    """
+    env = dict(os.environ)
+
+    # Resolve deny set from defaults + policy
+    strip_set: set[str] = set(_DEFAULT_STRIP_ENV)
+    if policy:
+        rt = policy.get("worker_runtime", {})
+        if isinstance(rt, dict):
+            extra = rt.get("strip_env", [])
+            if isinstance(extra, list):
+                strip_set.update(k for k in extra if isinstance(k, str))
+
+    # Strip
+    stripped: list[str] = sorted(k for k in strip_set if k in env)
+    for k in stripped:
+        del env[k]
+
+    # Apply adapter overrides last
+    if spec_env:
+        env.update(spec_env)
+
+    return env, stripped
+
+
 def _trim_summary(text: str, max_chars: int = 1000) -> str:
     if len(text) <= max_chars:
         return text
@@ -309,7 +351,11 @@ def spawn(
         )
 
     try:
-        popen_env = {**os.environ, **spec.env} if spec.env else None
+        repo_policy = _load_repo_policy(repo_root)
+        popen_env, stripped_keys = build_child_env(
+            spec_env=spec.env or None,
+            policy=repo_policy,
+        )
         if spec.stdout_to_file:
             out_f = open(output_path, "w")
             proc = subprocess.Popen(
@@ -418,6 +464,8 @@ def spawn(
             "context_hash": context_hash,
             "backend": backend,
             "backend_version": backend_version,
+            "env_sanitized": bool(stripped_keys),
+            "stripped_keys": stripped_keys,
         },
         data_dir=data_dir,
     )
