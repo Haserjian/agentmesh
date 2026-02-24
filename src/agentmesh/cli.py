@@ -12,8 +12,8 @@ import typer
 from rich.console import Console
 
 from . import __version__
-from .models import Agent, AgentKind, AgentStatus, ClaimIntent, EventKind, _now
-from . import db, events, claims
+from .models import Agent, AgentKind, AgentStatus, ClaimIntent, EventKind, Severity, _now
+from . import db, events, claims, messages, status
 
 app = typer.Typer(name="agentmesh", help="Local-first multi-agent coordination substrate.")
 console = Console()
@@ -211,3 +211,74 @@ def gc(
     result = db.gc_old_data(max_age_hours=max_age, data_dir=_get_data_dir())
     events.append_event(EventKind.GC, payload=result, data_dir=_get_data_dir())
     console.print(f"GC: {result['claims']} claims, {result['agents']} agents, {result['messages']} messages")
+
+
+# -- Message commands --
+
+@app.command()
+def msg(
+    text: str = typer.Argument(..., help="Message body"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Sending agent"),
+    to: Optional[str] = typer.Option(None, "--to", help="Target agent"),
+    severity: str = typer.Option("FYI", "--severity", "-s"),
+    channel: str = typer.Option("general", "--channel", "-c"),
+) -> None:
+    """Post a message to the board."""
+    _ensure_db()
+    agent_id = agent or _auto_agent_id()
+    sev = Severity(severity)
+    m = messages.post(agent_id, text, to_agent=to, channel=channel, severity=sev, data_dir=_get_data_dir())
+    style = messages.severity_style(sev)
+    console.print(f"[{style}][{sev.value}][/] {text}")
+
+
+@app.command(name="inbox")
+def inbox_cmd(
+    agent: Optional[str] = typer.Option(None, "--agent", "-a"),
+    unread: bool = typer.Option(False, "--unread"),
+    channel: Optional[str] = typer.Option(None, "--channel", "-c"),
+    severity: Optional[str] = typer.Option(None, "--severity", "-s"),
+    limit: int = typer.Option(20, "--limit", "-l"),
+) -> None:
+    """List messages."""
+    _ensure_db()
+    agent_id = agent or _auto_agent_id()
+    sev = Severity(severity) if severity else None
+    msgs = messages.inbox(
+        agent_id=agent_id, unread=unread, channel=channel,
+        severity=sev, limit=limit, data_dir=_get_data_dir(),
+    )
+    if not msgs:
+        console.print("[dim]No messages[/dim]")
+        return
+    for m in msgs:
+        style = messages.severity_style(m.severity)
+        prefix = f"[{style}][{m.severity.value}][/]"
+        to_str = f" -> {m.to_agent}" if m.to_agent else ""
+        console.print(f"{prefix} {m.from_agent}{to_str}: {m.body}  [dim]{m.created_at[:19]}[/dim]")
+
+
+# -- Status command --
+
+@app.command(name="status")
+def status_cmd(
+    json_out: bool = typer.Option(False, "--json", help="JSON output"),
+    watch: bool = typer.Option(False, "--watch", "-w", help="Live refresh"),
+) -> None:
+    """Show mesh status dashboard."""
+    _ensure_db()
+    if json_out:
+        result = status.render_status(data_dir=_get_data_dir(), as_json=True)
+        console.print(result)
+        return
+    if watch:
+        import time
+        try:
+            while True:
+                console.clear()
+                status.render_status(data_dir=_get_data_dir(), console=console)
+                time.sleep(2)
+        except KeyboardInterrupt:
+            pass
+    else:
+        status.render_status(data_dir=_get_data_dir(), console=console)
