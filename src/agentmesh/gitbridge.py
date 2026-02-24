@@ -51,6 +51,14 @@ def get_staged_files(cwd: str | None = None) -> list[str]:
     return [line for line in out.splitlines() if line.strip()]
 
 
+def get_commit_files(commit_sha: str, cwd: str | None = None) -> list[str]:
+    """Return list of file paths changed by a commit."""
+    out = _run_git(["show", "--format=", "--name-only", commit_sha], cwd=cwd)
+    if not out:
+        return []
+    return [line for line in out.splitlines() if line.strip()]
+
+
 def compute_patch_hash(diff_text: str) -> str:
     """SHA-256 hash of diff text. Returns sha256:<hex>."""
     h = hashlib.sha256(diff_text.encode()).hexdigest()

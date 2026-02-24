@@ -1,6 +1,7 @@
 """Ed25519 key management for witness signing."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -19,11 +20,31 @@ def _keys_dir(data_dir: Path | None = None) -> Path:
     return d
 
 
+def public_key_raw_bytes(pub: Ed25519PublicKey) -> bytes:
+    """Raw 32-byte Ed25519 public key."""
+    return pub.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+
+
+def key_id_from_public_bytes(raw_pub: bytes) -> str:
+    """Derive key ID: mesh_<sha256(pub_bytes)[:16]> from raw public key bytes."""
+    h = hashlib.sha256(raw_pub).hexdigest()[:16]
+    return f"mesh_{h}"
+
+
 def key_id_from_public(pub: Ed25519PublicKey) -> str:
     """Derive key ID: mesh_<sha256(pub_bytes)[:16]>."""
-    raw = pub.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    h = hashlib.sha256(raw).hexdigest()[:16]
-    return f"mesh_{h}"
+    return key_id_from_public_bytes(public_key_raw_bytes(pub))
+
+
+def public_key_b64_from_public(pub: Ed25519PublicKey) -> str:
+    """URL-safe base64 for raw Ed25519 public key bytes."""
+    return base64.urlsafe_b64encode(public_key_raw_bytes(pub)).decode("ascii")
+
+
+def public_key_b64(key_id: str, data_dir: Path | None = None) -> str:
+    """URL-safe base64 for a stored key's raw Ed25519 public key bytes."""
+    pub = load_public_key(key_id, data_dir)
+    return public_key_b64_from_public(pub)
 
 
 def generate_key(data_dir: Path | None = None) -> tuple[str, Ed25519PrivateKey]:

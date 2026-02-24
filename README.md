@@ -41,7 +41,7 @@ When multiple AI agents (or humans) work in the same repo, AgentMesh prevents ch
 - **Episodes**: every work session gets a unique ID (`ep_...`) that binds claims, capsules, and commits.
 - **Capsules**: structured context bundles (SBAR format) for zero-ramp-up handoffs between agents.
 - **Weaver**: hash-chained provenance linking capsules to git commits. Every change is traceable.
-- **Commit trailers**: `agentmesh commit` injects `AgentMesh-Episode:` by default, and can attach signed witness trailers (`AgentMesh-KeyID`, `AgentMesh-Witness`, `AgentMesh-Sig`) when witness support + keys are present.
+- **Commit trailers**: `agentmesh commit` injects `AgentMesh-Episode:` by default, and can attach signed witness trailers (`AgentMesh-KeyID`, `AgentMesh-Witness`, `AgentMesh-Sig` + portable witness payload chunks) when witness support + keys are present.
 
 ## Optional Witness Signing
 
@@ -52,6 +52,8 @@ agentmesh key generate
 agentmesh commit -m "Fix timeout handling"
 agentmesh witness verify HEAD
 ```
+
+Witness verification is portable: the signed witness payload is embedded in commit trailers, so CI and other machines can verify without local sidecar state.
 
 ## CI Integration
 
@@ -73,7 +75,7 @@ jobs:
       - uses: Haserjian/agentmesh-action@v1
 ```
 
-The action posts a sticky PR comment showing what % of commits carry episode trailers. Set `require-trailers: "true"` to enforce 100% coverage.
+The action posts a sticky PR comment showing commit coverage. Set `require-trailers: "true"` to enforce episode lineage, and `verify-witness: "true"` + `require-witness: "true"` to enforce cryptographic witness verification.
 
 ## License
 
