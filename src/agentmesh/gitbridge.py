@@ -57,6 +57,24 @@ def compute_patch_hash(diff_text: str) -> str:
     return f"sha256:{h}"
 
 
+def compute_patch_id_stable(diff_text: str, cwd: str | None = None) -> str | None:
+    """Compute git patch-id --stable from diff text. Returns hex string or None."""
+    if not diff_text:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "patch-id", "--stable"],
+            input=diff_text, capture_output=True, text=True, timeout=10,
+            cwd=cwd,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        # Output format: "<patch-id> <commit-sha-or-zero>"
+        return result.stdout.strip().split()[0]
+    except (subprocess.TimeoutExpired, FileNotFoundError, IndexError):
+        return None
+
+
 def git_commit(
     message: str,
     extra_args: list[str] | None = None,

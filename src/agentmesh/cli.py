@@ -835,11 +835,27 @@ def commit_cmd(
         staged_files = gitbridge.get_staged_files(cwd)
 
     # Compute patch hash from final staged state (after any test mutations)
-    patch_hash = gitbridge.compute_patch_hash(gitbridge.get_staged_diff(cwd))
+    diff_text = gitbridge.get_staged_diff(cwd)
+    patch_hash = gitbridge.compute_patch_hash(diff_text)
 
-    # Build trailer
+    # Build trailer -- witness if key available, else episode-only
     trailer = ""
+    witness_result = None
     if episode_trailer:
+        try:
+            from . import witness as _witness
+            witness_result = _witness.create_and_sign(agent_id, cwd=cwd, data_dir=_get_data_dir())
+        except ImportError as exc:
+            missing = getattr(exc, "name", "") or ""
+            if missing.startswith("cryptography") or missing == "agentmesh.witness":
+                # Optional witness deps are not installed; keep commit flow working.
+                witness_result = None
+            else:
+                raise
+
+    if witness_result:
+        _w, _w_hash, _sig, _kid, trailer = witness_result
+    elif episode_trailer:
         ep_id = episodes.get_current_episode(_get_data_dir())
         if ep_id:
             trailer = f"{EPISODE_TRAILER_KEY}: {ep_id}"
@@ -872,11 +888,14 @@ def commit_cmd(
             "patch_hash": patch_hash,
             "files": staged_files,
             "weave_event_id": evt.event_id,
+            "witness_hash": witness_result[1] if witness_result else "",
         },
         data_dir=_get_data_dir(),
     )
 
     console.print(f"Committed [bold]{sha[:10]}[/bold]  weave={evt.event_id}")
+    if witness_result:
+        console.print(f"  witness={witness_result[1][:30]}... signed by {witness_result[3]}")
     console.print(f"  {len(staged_files)} file(s): {', '.join(staged_files[:5])}")
 
 
@@ -1089,6 +1108,89 @@ def weave_export(
     else:
         evts = db.list_weave_events(_get_data_dir(), episode_id=episode)
         console.print(json.dumps([e.model_dump() for e in evts], indent=2))
+
+
+# -- Witness commands --
+
+witness_app = typer.Typer(help="Witness envelope commands.")
+app.add_typer(witness_app, name="witness")
+
+
+@witness_app.command(name="verify")
+def witness_verify_cmd(
+    commit: str = typer.Argument("HEAD", help="Commit SHA to verify"),
+) -> None:
+    """Verify a commit's witness envelope."""
+    try:
+        from . import witness as _witness
+    except ImportError as exc:
+        missing = getattr(exc, "name", "") or ""
+        if not (missing.startswith("cryptography") or missing == "agentmesh.witness"):
+            raise
+        console.print(
+            "Witness support not installed. Run: pip install 'agentmesh-core[witness]'",
+            style="red",
+            markup=False,
+        )
+        raise typer.Exit(1)
+    result = _witness.verify_commit(commit, cwd=os.getcwd(), data_dir=_get_data_dir())
+    if result.ok:
+        console.print(f"[green]VERIFIED[/green]  {result.details}")
+    elif result.status == "NO_TRAILERS":
+        console.print(f"[dim]NO_TRAILERS[/dim]  {result.details}")
+    elif result.status == "WITNESS_MISSING":
+        console.print(f"[yellow]WITNESS_MISSING[/yellow]  {result.details}")
+    else:
+        console.print(f"[red]{result.status}[/red]  {result.details}")
+        raise typer.Exit(1)
+
+
+# -- Key commands --
+
+key_app = typer.Typer(help="Signing key management.")
+app.add_typer(key_app, name="key")
+
+
+@key_app.command(name="generate")
+def key_generate_cmd() -> None:
+    """Generate a new Ed25519 signing key."""
+    try:
+        from . import keystore as _ks
+    except ImportError as exc:
+        missing = getattr(exc, "name", "") or ""
+        if not (missing.startswith("cryptography") or missing == "agentmesh.keystore"):
+            raise
+        console.print(
+            "Witness support not installed. Run: pip install 'agentmesh-core[witness]'",
+            style="red",
+            markup=False,
+        )
+        raise typer.Exit(1)
+    kid, _priv = _ks.generate_key(_get_data_dir())
+    console.print(f"Generated key [bold]{kid}[/bold]")
+
+
+@key_app.command(name="list")
+def key_list_cmd() -> None:
+    """List signing keys."""
+    try:
+        from . import keystore as _ks
+    except ImportError as exc:
+        missing = getattr(exc, "name", "") or ""
+        if not (missing.startswith("cryptography") or missing == "agentmesh.keystore"):
+            raise
+        console.print(
+            "Witness support not installed. Run: pip install 'agentmesh-core[witness]'",
+            style="red",
+            markup=False,
+        )
+        raise typer.Exit(1)
+    kids = _ks.list_keys(_get_data_dir())
+    if not kids:
+        console.print("[dim]No keys. Run: agentmesh key generate[/dim]")
+        return
+    for kid in kids:
+        console.print(f"  {kid}")
 
 
 # -- MCP commands --

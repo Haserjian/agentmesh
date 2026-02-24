@@ -10,6 +10,9 @@ AgentMesh adds deterministic coordination (claims, waits, steals), commit-linked
 pipx install agentmesh-core   # recommended (isolated)
 # or
 pip install agentmesh-core
+
+# optional: commit witness signing (Ed25519)
+pipx install "agentmesh-core[witness]"
 ```
 
 ## Quick Start
@@ -38,7 +41,17 @@ When multiple AI agents (or humans) work in the same repo, AgentMesh prevents ch
 - **Episodes**: every work session gets a unique ID (`ep_...`) that binds claims, capsules, and commits.
 - **Capsules**: structured context bundles (SBAR format) for zero-ramp-up handoffs between agents.
 - **Weaver**: hash-chained provenance linking capsules to git commits. Every change is traceable.
-- **Commit trailers**: `agentmesh commit` injects `AgentMesh-Episode:` into commit messages for CI verification.
+- **Commit trailers**: `agentmesh commit` injects `AgentMesh-Episode:` by default, and can attach signed witness trailers (`AgentMesh-KeyID`, `AgentMesh-Witness`, `AgentMesh-Sig`) when witness support + keys are present.
+
+## Optional Witness Signing
+
+If installed with `agentmesh-core[witness]`, you can sign commit witnesses locally:
+
+```bash
+agentmesh key generate
+agentmesh commit -m "Fix timeout handling"
+agentmesh witness verify HEAD
+```
 
 ## CI Integration
 

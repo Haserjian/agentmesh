@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentmesh-core"
-version = "0.5.1"
+version = "0.5.2"
 description = "Local-first multi-agent coordination and provenance for coding workflows"
 requires-python = ">=3.10"
 license = "MIT"
@@ -49,6 +49,9 @@ dev = [
 ]
 mcp = [
     "mcp>=1.0",
+]
+witness = [
+    "cryptography>=42.0",
 ]
 
 [tool.hatch.build.targets.wheel]
