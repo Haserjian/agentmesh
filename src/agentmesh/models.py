@@ -66,6 +66,7 @@ class EventKind(str, enum.Enum):
     EPISODE_END = "EPISODE_END"
     WAIT = "WAIT"
     STEAL = "STEAL"
+    COMMIT = "COMMIT"
 
 
 def _now() -> str:
