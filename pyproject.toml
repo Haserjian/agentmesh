@@ -40,11 +40,15 @@ Issues = "https://github.com/Haserjian/agentmesh/issues"
 
 [project.scripts]
 agentmesh = "agentmesh.cli:app"
+agentmesh-mcp = "agentmesh.mcp_server:main"
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
     "pytest-tmp-files>=0.0.2",
+]
+mcp = [
+    "mcp>=1.0",
 ]
 
 [tool.hatch.build.targets.wheel]

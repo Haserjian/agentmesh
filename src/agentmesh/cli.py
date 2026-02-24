@@ -1091,6 +1091,23 @@ def weave_export(
         console.print(json.dumps([e.model_dump() for e in evts], indent=2))
 
 
+# -- MCP commands --
+
+mcp_app = typer.Typer(help="MCP server management.")
+app.add_typer(mcp_app, name="mcp")
+
+
+@mcp_app.command(name="serve")
+def mcp_serve() -> None:
+    """Start the AgentMesh MCP server (stdio transport)."""
+    try:
+        from .mcp_server import main as mcp_main
+    except ImportError:
+        console.print("MCP support not installed. Run: pip install 'agentmesh-core[mcp]'", style="red")
+        raise typer.Exit(1)
+    mcp_main()
+
+
 # -- Hooks commands --
 
 hooks_app = typer.Typer(help="Claude Code hook management.")
