@@ -9,7 +9,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from agentmesh import db, events
-from agentmesh.cli import app
+from agentmesh.cli import EPISODE_TRAILER_KEY, app
 from agentmesh.episodes import start_episode, get_current_episode
 from agentmesh.gitbridge import get_staged_diff, get_staged_files, compute_patch_hash, git_commit
 from agentmesh.models import EventKind
@@ -60,7 +60,7 @@ def test_commit_with_episode_trailer(tmp_path: Path, tmp_data_dir: Path) -> None
     (repo / "bar.py").write_text("y = 2\n")
     subprocess.run(["git", "add", "bar.py"], cwd=str(repo), capture_output=True, check=True)
 
-    trailer = f"AgentMesh-Episode: {ep_id}"
+    trailer = f"{EPISODE_TRAILER_KEY}: {ep_id}"
     ok, sha, err = git_commit("add bar", trailer=trailer, cwd=str(repo))
     assert ok
 
@@ -69,7 +69,39 @@ def test_commit_with_episode_trailer(tmp_path: Path, tmp_data_dir: Path) -> None
         capture_output=True, text=True,
     ).stdout
     assert ep_id in log
-    assert "AgentMesh-Episode:" in log
+    assert f"{EPISODE_TRAILER_KEY}:" in log
+
+
+def test_cli_commit_trailer_matches_action_parser(
+    tmp_path: Path,
+    tmp_data_dir: Path,
+    monkeypatch,
+) -> None:
+    """CLI trailer must be parseable via git's trailer key query used by agentmesh-action."""
+    repo = _init_repo(tmp_path / "repo")
+    ep_id = start_episode(title="trailer parser", data_dir=tmp_data_dir)
+    (repo / "parsed.py").write_text("v = 1\n")
+    subprocess.run(["git", "add", "parsed.py"], cwd=str(repo), capture_output=True, check=True)
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "trailer_agent")
+    result = runner.invoke(app, ["commit", "-m", "add parsed"])
+    assert result.exit_code == 0, result.output
+
+    parsed = subprocess.run(
+        [
+            "git",
+            "log",
+            "-1",
+            f"--format=%(trailers:key={EPISODE_TRAILER_KEY},valueonly)",
+        ],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert parsed == ep_id
 
 
 def test_commit_without_staged_files(tmp_path: Path) -> None:

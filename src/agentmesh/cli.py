@@ -19,6 +19,7 @@ app = typer.Typer(name="agentmesh", help="Local-first multi-agent coordination s
 console = Console()
 
 _DATA_DIR: Path | None = None
+EPISODE_TRAILER_KEY = "AgentMesh-Episode"
 
 
 def _get_data_dir() -> Path | None:
@@ -755,7 +756,7 @@ def commit_cmd(
     if episode_trailer:
         ep_id = episodes.get_current_episode(_get_data_dir())
         if ep_id:
-            trailer = f"AgentMesh-Episode: {ep_id}"
+            trailer = f"{EPISODE_TRAILER_KEY}: {ep_id}"
 
     ok, sha, err = gitbridge.git_commit(message, trailer=trailer, cwd=cwd)
     if not ok:
