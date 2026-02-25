@@ -13,7 +13,7 @@ from typing import Any
 
 
 GITHUB_API = "https://api.github.com"
-DEFAULT_REQUIRED_CHECKS = ("lineage", "assay-gate")
+DEFAULT_REQUIRED_CHECKS = ("lineage", "assay-gate", "assay-verify")
 
 
 def parse_iso8601(value: str) -> datetime:
@@ -286,7 +286,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="required_check",
         default=[],
-        help="required check run name (repeatable). Defaults: lineage + assay-gate",
+        help="required check run name (repeatable). Defaults: lineage + assay-gate + assay-verify",
     )
     parser.add_argument("--max-prs", type=int, default=200, help="max PRs to inspect")
     parser.add_argument("--token-env", default="GITHUB_TOKEN", help="env var holding GitHub token")
