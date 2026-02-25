@@ -244,6 +244,44 @@ def _summarize_subset(prs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _summarize_check_pass_rates(
+    prs: list[dict[str, Any]],
+    required_checks: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Summarize per-check pass rates for a PR subset."""
+    total = len(prs)
+    out: dict[str, dict[str, Any]] = {}
+    for check in required_checks:
+        passing = 0
+        missing = 0
+        failed = 0
+        incomplete = 0
+        for pr in prs:
+            statuses = pr.get("check_statuses")
+            if isinstance(statuses, dict):
+                status = str(statuses.get(check, "missing"))
+            else:
+                status = "missing"
+            if status == "success":
+                passing += 1
+            elif status == "missing":
+                missing += 1
+            elif status.startswith("incomplete:"):
+                incomplete += 1
+                failed += 1
+            else:
+                failed += 1
+        out[check] = {
+            "passing_prs": passing,
+            "ai_prs_total": total,
+            "coverage_pct": compute_coverage(passing, total),
+            "missing_prs": missing,
+            "failed_prs": failed,
+            "incomplete_prs": incomplete,
+        }
+    return out
+
+
 def _render_markdown(report: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append("# Evidence Chain KPI")
@@ -283,6 +321,32 @@ def _render_markdown(report: dict[str, Any]) -> str:
     lines.append("")
 
     checks = report["required_checks"]
+    lines.append("## Required Check Pass Rates")
+    lines.append("")
+    check_rates = report.get("check_pass_rates") or {}
+    since_rates = (report.get("since_enforcement") or {}).get("check_pass_rates") if report.get("enforcement_date") else None
+    if since_rates:
+        lines.append("| Check | Primary pass/total | Primary coverage | Since enforcement pass/total | Since enforcement coverage |")
+        lines.append("|---|---:|---:|---:|---:|")
+        for check in checks:
+            primary = check_rates.get(check) or {}
+            since = since_rates.get(check) or {}
+            lines.append(
+                f"| {check} | {primary.get('passing_prs', 0)}/{primary.get('ai_prs_total', 0)} | "
+                f"{primary.get('coverage_pct', 0.0)}% | {since.get('passing_prs', 0)}/{since.get('ai_prs_total', 0)} | "
+                f"{since.get('coverage_pct', 0.0)}% |"
+            )
+    else:
+        lines.append("| Check | Pass/total | Coverage |")
+        lines.append("|---|---:|---:|")
+        for check in checks:
+            primary = check_rates.get(check) or {}
+            lines.append(
+                f"| {check} | {primary.get('passing_prs', 0)}/{primary.get('ai_prs_total', 0)} | "
+                f"{primary.get('coverage_pct', 0.0)}% |"
+            )
+    lines.append("")
+
     header = "| PR | Merged | Complete | " + " | ".join(checks) + " |"
     sep = "|" + "---|" * (3 + len(checks))
     lines.append(header)
@@ -343,6 +407,7 @@ def run(args: argparse.Namespace) -> int:
 
     primary_prs = _subset_since(evaluated, primary_since)
     primary_summary = _summarize_subset(primary_prs)
+    primary_check_pass_rates = _summarize_check_pass_rates(primary_prs, required_checks)
 
     slices: dict[str, dict[str, Any]] = {}
     for days in window_days:
@@ -356,6 +421,7 @@ def run(args: argparse.Namespace) -> int:
         subset = _subset_since(evaluated, enforcement_dt)
         since_enforcement = _summarize_subset(subset)
         since_enforcement["enforcement_date"] = enforcement_date
+        since_enforcement["check_pass_rates"] = _summarize_check_pass_rates(subset, required_checks)
 
     report: dict[str, Any] = {
         "repo": repo_full,
@@ -366,6 +432,7 @@ def run(args: argparse.Namespace) -> int:
         "ai_prs_total": primary_summary["ai_prs_total"],
         "passing_prs": primary_summary["passing_prs"],
         "coverage_pct": primary_summary["coverage_pct"],
+        "check_pass_rates": primary_check_pass_rates,
         "slices": slices,
         "enforcement_date": enforcement_date,
         "since_enforcement": since_enforcement,
