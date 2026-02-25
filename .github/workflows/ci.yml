@@ -110,7 +110,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install assay
-        run: pip install "assay-ai @ git+https://github.com/Haserjian/assay.git@v1.10.0"
+        run: pip install "assay-ai>=1.10.1"
 
       - name: Save baseline on first run
         run: |
