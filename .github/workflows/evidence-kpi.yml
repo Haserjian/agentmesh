@@ -45,14 +45,14 @@ jobs:
             --repo "${{ github.repository }}" \
             --base "$BASE" \
             --days "$DAYS" \
-            --out-json ".kpi/evidence-chain-kpi.json" \
-            --out-md ".kpi/evidence-chain-kpi.md"
+            --out-json "kpi/evidence-chain-kpi.json" \
+            --out-md "kpi/evidence-chain-kpi.md"
 
       - name: Add summary
         if: always()
         run: |
-          if [ -f .kpi/evidence-chain-kpi.md ]; then
-            cat .kpi/evidence-chain-kpi.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -f kpi/evidence-chain-kpi.md ]; then
+            cat kpi/evidence-chain-kpi.md >> "$GITHUB_STEP_SUMMARY"
           else
             echo "No KPI markdown produced." >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -62,4 +62,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: evidence-chain-kpi
-          path: .kpi/
+          path: kpi/
