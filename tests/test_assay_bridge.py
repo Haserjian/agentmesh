@@ -183,19 +183,52 @@ def test_bridge_degraded_exit_3(data_dir, repo_dir):
     assert "bad input" in result.reason
 
 
-# -- 7. DEGRADED: no repo_path and no spawns --
+# -- 7. DEGRADED: no repo_path, no spawns, and CWD is not a git repo --
 
-def test_bridge_degraded_no_repo_path(data_dir):
-    result = emit_bridge_event(
-        task_id="task_stu",
-        terminal_state="ABORTED",
-        repo_path=None,
-        agent_id="agent_1",
-        data_dir=data_dir,
-    )
+def test_bridge_degraded_no_repo_path(data_dir, tmp_path):
+    # Ensure CWD fallback doesn't find a .git dir
+    non_git = tmp_path / "not_a_repo"
+    non_git.mkdir()
+    with patch("agentmesh.assay_bridge.Path.cwd", return_value=non_git):
+        result = emit_bridge_event(
+            task_id="task_stu",
+            terminal_state="ABORTED",
+            repo_path=None,
+            agent_id="agent_1",
+            data_dir=data_dir,
+        )
 
     assert result.status == "BRIDGE_EMIT_DEGRADED"
     assert "no repo path" in result.reason
+
+
+# -- 7b. CWD fallback: no spawns but CWD is a git repo --
+
+def test_bridge_cwd_fallback_finds_git_repo(data_dir, tmp_path):
+    """When no spawn records exist, fall back to CWD if it's a git repo."""
+    fake_repo = tmp_path / "git_repo"
+    fake_repo.mkdir()
+    (fake_repo / ".git").mkdir()
+
+    with patch("agentmesh.assay_bridge.Path.cwd", return_value=fake_repo), \
+         patch("agentmesh.assay_bridge.shutil.which", return_value="/usr/bin/assay"), \
+         patch("agentmesh.assay_bridge.subprocess.run") as mock_run:
+        mock_run.return_value = _make_completed_process(json.dumps(PASS_REPORT), 0)
+
+        result = emit_bridge_event(
+            task_id="task_cwd_fallback",
+            terminal_state="MERGED",
+            repo_path=None,
+            agent_id="agent_1",
+            data_dir=data_dir,
+        )
+
+    assert result.status == "BRIDGE_EMIT_OK"
+    assert result.gate_report["result"] == "PASS"
+    # Verify assay was called with the CWD path
+    mock_run.assert_called_once()
+    call_args = mock_run.call_args[0][0]
+    assert str(fake_repo) in call_args
 
 
 # -- 8. Event always emitted on OK --
