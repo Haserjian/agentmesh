@@ -4,6 +4,7 @@ from datetime import timezone
 
 from agentmesh.evidence_kpi import (
     DEFAULT_REQUIRED_CHECKS,
+    _summarize_check_pass_rates,
     compute_coverage,
     evaluate_required_checks,
     normalize_window_days,
@@ -77,3 +78,55 @@ def test_parse_date_or_datetime_utc_accepts_date_and_iso() -> None:
     dt_iso = parse_date_or_datetime_utc("2026-02-24T12:34:56Z")
     assert dt_iso.tzinfo == timezone.utc
     assert dt_iso.isoformat() == "2026-02-24T12:34:56+00:00"
+
+
+def test_summarize_check_pass_rates_aggregates_per_check() -> None:
+    prs = [
+        {
+            "check_statuses": {
+                "lineage": "success",
+                "assay-gate": "success",
+                "assay-verify": "missing",
+            }
+        },
+        {
+            "check_statuses": {
+                "lineage": "failure",
+                "assay-gate": "success",
+                "assay-verify": "incomplete:queued",
+            }
+        },
+        {
+            "check_statuses": {
+                "lineage": "success",
+                "assay-gate": "failure",
+                "assay-verify": "success",
+            }
+        },
+    ]
+    rates = _summarize_check_pass_rates(prs, ["lineage", "assay-gate", "assay-verify"])
+
+    assert rates["lineage"]["passing_prs"] == 2
+    assert rates["lineage"]["ai_prs_total"] == 3
+    assert rates["lineage"]["coverage_pct"] == 66.67
+    assert rates["lineage"]["missing_prs"] == 0
+    assert rates["lineage"]["failed_prs"] == 1
+    assert rates["lineage"]["incomplete_prs"] == 0
+
+    assert rates["assay-gate"]["passing_prs"] == 2
+    assert rates["assay-gate"]["coverage_pct"] == 66.67
+    assert rates["assay-gate"]["failed_prs"] == 1
+
+    assert rates["assay-verify"]["passing_prs"] == 1
+    assert rates["assay-verify"]["coverage_pct"] == 33.33
+    assert rates["assay-verify"]["missing_prs"] == 1
+    assert rates["assay-verify"]["failed_prs"] == 1
+    assert rates["assay-verify"]["incomplete_prs"] == 1
+
+
+def test_summarize_check_pass_rates_handles_missing_status_dict() -> None:
+    rates = _summarize_check_pass_rates([{}, {"check_statuses": None}], ["lineage"])
+    assert rates["lineage"]["ai_prs_total"] == 2
+    assert rates["lineage"]["passing_prs"] == 0
+    assert rates["lineage"]["missing_prs"] == 2
+    assert rates["lineage"]["coverage_pct"] == 0.0
