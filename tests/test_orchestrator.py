@@ -128,6 +128,9 @@ def test_abort_from_running(data_dir, agent):
 
     task = orchestrator.abort_task(task.task_id, reason="timeout", data_dir=data_dir)
     assert task.state == TaskState.ABORTED
+    attempts = db.list_attempts(task.task_id, data_dir)
+    assert attempts[-1].outcome == "failure"
+    assert attempts[-1].ended_at != ""
 
 
 def test_abort_from_planned(data_dir):
