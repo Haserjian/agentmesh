@@ -99,6 +99,36 @@ jobs:
           name: release-check-preview
           path: .release-check.json
 
+  assay-gate:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install assay
+        run: pip install "assay-ai @ git+https://github.com/Haserjian/assay.git@v1.10.0"
+
+      - name: Save baseline on first run
+        run: |
+          if [ ! -f .assay/score-baseline.json ]; then
+            echo "No baseline found, saving initial baseline."
+            assay gate save-baseline . --json
+          fi
+
+      - name: Run evidence gate
+        run: assay gate check . --min-score 0 --json
+
+      - name: Upload gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assay-gate-report
+          path: .assay/
+
   test:
     runs-on: ubuntu-latest
     strategy:
