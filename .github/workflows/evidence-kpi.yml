@@ -16,7 +16,7 @@ on:
       enforcement_date:
         description: "Enforcement start date (YYYY-MM-DD)"
         required: false
-        default: "2026-02-24"
+        default: "2026-02-25"
 
 permissions:
   contents: read
@@ -27,7 +27,7 @@ jobs:
   evidence-kpi:
     runs-on: ubuntu-latest
     env:
-      DEFAULT_ENFORCEMENT_DATE: "2026-02-24"
+      DEFAULT_ENFORCEMENT_DATE: "2026-02-25"
     steps:
       - uses: actions/checkout@v4
 
