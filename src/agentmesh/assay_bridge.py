@@ -32,19 +32,31 @@ class BridgeResult:
 
 
 def _find_repo_path(task_id: str, data_dir: Path | None) -> Path | None:
-    """Look up repo_cwd from spawn records for *task_id*."""
+    """Look up repo_cwd from spawn records for *task_id*.
+
+    Falls back to the process CWD if it looks like a git repo.  This
+    handles CLI-driven flows (``orch advance --to merged``) where no
+    spawn record exists.
+    """
     try:
         rows = db.list_spawns_db(data_dir=data_dir)
     except Exception:
-        return None
+        rows = []
     matches = [r for r in rows if r.get("task_id") == task_id]
-    if not matches:
-        return None
-    latest = matches[-1]
-    cwd = latest.get("repo_cwd", "")
-    if not cwd:
-        return None
-    return Path(cwd)
+    if matches:
+        cwd = matches[-1].get("repo_cwd", "")
+        if cwd:
+            return Path(cwd)
+
+    # Fallback: CWD if it contains a .git directory (CLI-driven flows).
+    try:
+        cwd = Path.cwd()
+        if (cwd / ".git").is_dir():
+            return cwd
+    except OSError:
+        pass
+
+    return None
 
 
 def _run_assay_gate(repo_path: Path) -> tuple[str, dict[str, Any], str]:
