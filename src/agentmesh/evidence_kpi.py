@@ -327,7 +327,7 @@ def run(args: argparse.Namespace) -> int:
     enforcement_dt: datetime | None = None
     if args.enforcement_date:
         enforcement_dt = parse_date_or_datetime_utc(args.enforcement_date)
-        enforcement_date = enforcement_dt.date().isoformat()
+        enforcement_date = enforcement_dt.isoformat().replace("+00:00", "Z")
         if enforcement_dt < fetch_since:
             fetch_since = enforcement_dt
 
