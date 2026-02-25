@@ -1,0 +1,147 @@
+name: Branch Protection Drift Guard
+
+on:
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/agentmesh/evidence_kpi.py"
+      - ".github/workflows/evidence-kpi.yml"
+      - ".github/workflows/evidence-enforcement-monitor.yml"
+      - ".github/workflows/branch-protection-drift.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  drift-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check branch protection vs KPI required checks
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          REPO="${{ github.repository }}"
+          BASE="main"
+
+          echo "## Branch Protection Drift Guard" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          # --- 1. Get KPI required checks from code ---
+          KPI_CHECKS=$(python3 -c "
+          import ast, sys
+          with open('src/agentmesh/evidence_kpi.py') as f:
+              tree = ast.parse(f.read())
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id == 'DEFAULT_REQUIRED_CHECKS':
+                          vals = [elt.value for elt in node.value.elts]
+                          print(','.join(sorted(vals)))
+                          sys.exit(0)
+          print('ERROR')
+          ")
+
+          if [ "$KPI_CHECKS" = "ERROR" ]; then
+            echo "::error::Failed to parse DEFAULT_REQUIRED_CHECKS from evidence_kpi.py."
+            echo "- **FAIL**: Cannot parse KPI required checks." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "KPI required checks: ${KPI_CHECKS}"
+          echo "- KPI required checks: \`${KPI_CHECKS}\`" >> "$GITHUB_STEP_SUMMARY"
+
+          # --- 2. Get branch protection required checks ---
+          BP_CHECKS=""
+          BP_SKIPPED=0
+          set +e
+          BP_OUT=$(gh api "repos/${REPO}/branches/${BASE}/protection/required_status_checks" \
+            --jq '[.checks[].context] | sort | join(",")' 2>&1)
+          BP_RC=$?
+          set -e
+
+          if [ "$BP_RC" -ne 0 ]; then
+            if echo "$BP_OUT" | grep -qi "Resource not accessible by integration"; then
+              BP_SKIPPED=1
+              BP_CHECKS="$KPI_CHECKS"
+              echo "::warning::Skipping branch protection API comparison on this event (token lacks admin scope)."
+              echo "- Branch protection checks: \`SKIPPED_NO_ADMIN_SCOPE\`" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::Failed to read branch protection rules for ${BASE}. ${BP_OUT}"
+              echo "- **FAIL**: Cannot read branch protection rules." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          else
+            BP_CHECKS="$BP_OUT"
+            echo "Branch protection checks: ${BP_CHECKS}"
+            echo "- Branch protection checks: \`${BP_CHECKS}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # --- 3. Get workflow --required-check args ---
+          ENFORCEMENT_CHECKS=$(grep -oP '(?<=--required-check )\S+' \
+            .github/workflows/evidence-enforcement-monitor.yml | sort | paste -sd, -)
+          KPI_WF_CHECKS=$(grep -oP '(?<=--required-check )\S+' \
+            .github/workflows/evidence-kpi.yml | sort | paste -sd, -)
+
+          echo "Enforcement workflow checks: ${ENFORCEMENT_CHECKS}"
+          echo "KPI workflow checks: ${KPI_WF_CHECKS}"
+          echo "- Enforcement workflow checks: \`${ENFORCEMENT_CHECKS}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- KPI workflow checks: \`${KPI_WF_CHECKS}\`" >> "$GITHUB_STEP_SUMMARY"
+
+          # --- 4. Compare all four sources ---
+          DRIFT=0
+          DETAILS=""
+
+          if [ "$BP_SKIPPED" -eq 0 ] && [ "$BP_CHECKS" != "$KPI_CHECKS" ]; then
+            DETAILS="${DETAILS}\n- Branch protection (${BP_CHECKS}) != KPI code (${KPI_CHECKS})"
+            DRIFT=1
+          fi
+
+          if [ "$BP_SKIPPED" -eq 0 ] && [ "$BP_CHECKS" != "$ENFORCEMENT_CHECKS" ]; then
+            DETAILS="${DETAILS}\n- Branch protection (${BP_CHECKS}) != enforcement workflow (${ENFORCEMENT_CHECKS})"
+            DRIFT=1
+          fi
+
+          if [ "$BP_SKIPPED" -eq 0 ] && [ "$BP_CHECKS" != "$KPI_WF_CHECKS" ]; then
+            DETAILS="${DETAILS}\n- Branch protection (${BP_CHECKS}) != KPI workflow (${KPI_WF_CHECKS})"
+            DRIFT=1
+          fi
+
+          if [ "$KPI_CHECKS" != "$ENFORCEMENT_CHECKS" ]; then
+            DETAILS="${DETAILS}\n- KPI code (${KPI_CHECKS}) != enforcement workflow (${ENFORCEMENT_CHECKS})"
+            DRIFT=1
+          fi
+
+          if [ "$KPI_CHECKS" != "$KPI_WF_CHECKS" ]; then
+            DETAILS="${DETAILS}\n- KPI code (${KPI_CHECKS}) != KPI workflow (${KPI_WF_CHECKS})"
+            DRIFT=1
+          fi
+
+          if [ "$DRIFT" -eq 1 ]; then
+            echo ""
+            echo "::error::Required checks have drifted across sources."
+            echo -e "$DETAILS"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### DRIFT DETECTED" >> "$GITHUB_STEP_SUMMARY"
+            echo -e "$DETAILS" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo ""
+          if [ "$BP_SKIPPED" -eq 1 ]; then
+            echo "No drift detected across code/workflows; branch protection API check skipped."
+          else
+            echo "All four sources agree: ${BP_CHECKS}"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### No drift detected" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$BP_SKIPPED" -eq 1 ]; then
+            echo "Code/workflows agree: \`${KPI_CHECKS}\` (branch protection API skipped)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "All sources agree: \`${BP_CHECKS}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
