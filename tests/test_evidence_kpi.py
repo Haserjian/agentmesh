@@ -4,7 +4,9 @@ from datetime import timezone
 
 from agentmesh.evidence_kpi import (
     DEFAULT_REQUIRED_CHECKS,
+    _summarize_check_attempts,
     _summarize_check_pass_rates,
+    _summarize_reliability,
     build_trend_point,
     compute_coverage,
     evaluate_required_checks,
@@ -134,6 +136,35 @@ def test_summarize_check_pass_rates_handles_missing_status_dict() -> None:
     assert rates["lineage"]["coverage_pct"] == 0.0
 
 
+def test_summarize_check_attempts_flags_reruns() -> None:
+    runs = [
+        {"name": "lineage"},
+        {"name": "lineage"},
+        {"name": "assay-gate"},
+        {"name": "assay-verify"},
+        {"name": "other"},
+    ]
+    counts, rerun_checks = _summarize_check_attempts(runs, ["lineage", "assay-gate", "assay-verify"])
+    assert counts == {"lineage": 2, "assay-gate": 1, "assay-verify": 1}
+    assert rerun_checks == ["lineage"]
+
+
+def test_summarize_reliability_aggregates_rerun_metrics() -> None:
+    prs = [
+        {"rerun_detected": True, "check_attempt_counts": {"lineage": 2, "assay-gate": 1, "assay-verify": 1}},
+        {"rerun_detected": False, "check_attempt_counts": {"lineage": 1, "assay-gate": 1, "assay-verify": 1}},
+        {"rerun_detected": True, "check_attempt_counts": {"lineage": 1, "assay-gate": 3, "assay-verify": 1}},
+    ]
+    summary = _summarize_reliability(prs, ["lineage", "assay-gate", "assay-verify"])
+    assert summary["prs_with_reruns"] == 2
+    assert summary["ai_prs_total"] == 3
+    assert summary["rerun_rate_pct"] == 66.67
+    assert summary["by_check"]["lineage"]["rerun_prs"] == 1
+    assert summary["by_check"]["lineage"]["rerun_rate_pct"] == 33.33
+    assert summary["by_check"]["assay-gate"]["rerun_prs"] == 1
+    assert summary["by_check"]["assay-verify"]["rerun_prs"] == 0
+
+
 def test_build_trend_point_includes_core_metrics() -> None:
     report = {
         "generated_at": "2026-02-25T00:00:00Z",
@@ -145,11 +176,13 @@ def test_build_trend_point_includes_core_metrics() -> None:
         "ai_prs_total": 15,
         "enforcement_date": "2026-02-25T04:40:16Z",
         "check_pass_rates": {"lineage": {"coverage_pct": 100.0}},
+        "reliability": {"rerun_rate_pct": 10.0},
         "since_enforcement": {
             "coverage_pct": 100.0,
             "passing_prs": 6,
             "ai_prs_total": 6,
             "check_pass_rates": {"lineage": {"coverage_pct": 100.0}},
+            "reliability": {"rerun_rate_pct": 0.0},
         },
     }
     point = build_trend_point(
@@ -165,6 +198,8 @@ def test_build_trend_point_includes_core_metrics() -> None:
     assert point["coverage_pct"] == 40.0
     assert point["since_enforcement_coverage_pct"] == 100.0
     assert point["check_pass_rates"]["lineage"]["coverage_pct"] == 100.0
+    assert point["reliability"]["rerun_rate_pct"] == 10.0
+    assert point["since_enforcement_reliability"]["rerun_rate_pct"] == 0.0
 
 
 def test_merge_trend_history_dedupes_and_caps() -> None:
