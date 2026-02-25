@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "tool_name": "agentmesh",
-  "tool_version": "0.7.0",
+  "tool_version": "0.9.0",
   "recommended_defaults": {
     "commit_via_agentmesh": true,
     "capsule_on_finish": true,
