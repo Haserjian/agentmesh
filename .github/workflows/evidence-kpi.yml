@@ -119,8 +119,53 @@ jobs:
           print(f"previous_run_id={previous_run_id or 'none'}")
           PY
 
-      - name: Download previous KPI trend artifact
+      - name: Check previous KPI trend artifact availability
+        id: has_prev_artifact
         if: steps.find_prev.outputs.previous_run_id != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PREVIOUS_RUN_ID: ${{ steps.find_prev.outputs.previous_run_id }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          token = os.environ["GITHUB_TOKEN"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          previous_run_id = os.environ["PREVIOUS_RUN_ID"]
+          owner, name = repo.split("/", 1)
+          url = f"https://api.github.com/repos/{owner}/{name}/actions/runs/{previous_run_id}/artifacts?per_page=100"
+          req = urllib.request.Request(
+              url=url,
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "User-Agent": "agentmesh-evidence-kpi-history/1",
+              },
+              method="GET",
+          )
+
+          available = "false"
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  payload = json.loads(resp.read().decode("utf-8"))
+              for artifact in payload.get("artifacts", []):
+                  if str(artifact.get("name", "")) == "evidence-chain-kpi-history":
+                      available = "true"
+                      break
+          except Exception:
+              available = "false"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"available={available}\n")
+          print(f"previous_history_artifact_available={available}")
+          PY
+
+      - name: Download previous KPI trend artifact
+        if: steps.find_prev.outputs.previous_run_id != '' && steps.has_prev_artifact.outputs.available == 'true'
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
