@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from . import db, events
+from . import db, events, weaver
 from .models import EventKind, TaskState
 
 
@@ -124,6 +124,7 @@ def build_alpha_gate_report(
     transition_cov = _task_transition_coverage(tasks, data_dir)
     watchdog_ok = _watchdog_handled(rows)
     spawn_loss = _spawn_loss_check(data_dir)
+    weave_ok, weave_err = weaver.verify_weave(data_dir=data_dir)
 
     witness_from_result = _witness_verified_from_result(ci_result)
     if witness_from_result is None:
@@ -139,6 +140,7 @@ def build_alpha_gate_report(
             "required": require_witness_verified,
             "source": witness_source,
         },
+        "weave_chain_intact": {"pass": weave_ok, "error": weave_err},
         "full_transition_receipts": transition_cov,
         "watchdog_handled_event": {"pass": watchdog_ok},
         "no_orphan_finalization_loss": spawn_loss,

@@ -57,6 +57,7 @@ def test_alpha_gate_report_passes_happy_path(tmp_path: Path) -> None:
     assert report["overall_pass"] is True
     assert report["checks"]["merged_task_count"]["pass"] is True
     assert report["checks"]["witness_verified_ci"]["pass"] is True
+    assert report["checks"]["weave_chain_intact"]["pass"] is True
     assert report["checks"]["full_transition_receipts"]["pass"] is True
     assert report["checks"]["watchdog_handled_event"]["pass"] is True
     assert report["checks"]["no_orphan_finalization_loss"]["pass"] is True
@@ -83,6 +84,59 @@ def test_alpha_gate_prefers_structured_ci_result(tmp_path: Path) -> None:
     )
     assert report["checks"]["witness_verified_ci"]["pass"] is True
     assert report["checks"]["witness_verified_ci"]["source"] == "ci_result"
+
+
+def test_alpha_gate_fails_when_weave_chain_is_corrupted(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    db.init_db(data_dir)
+    db.register_agent(Agent(agent_id="alpha_agent", cwd="/tmp"), data_dir)
+
+    task = orchestrator.create_task("alpha", data_dir=data_dir)
+    orchestrator.assign_task(task.task_id, "alpha_agent", branch="feat/alpha", data_dir=data_dir)
+    orchestrator.transition_task(task.task_id, TaskState.RUNNING, data_dir=data_dir)
+    orchestrator.transition_task(task.task_id, TaskState.PR_OPEN, data_dir=data_dir)
+    orchestrator.transition_task(task.task_id, TaskState.CI_PASS, data_dir=data_dir)
+    orchestrator.transition_task(task.task_id, TaskState.REVIEW_PASS, data_dir=data_dir)
+    orchestrator.complete_task(task.task_id, agent_id="alpha_agent", data_dir=data_dir)
+
+    db.create_spawn(
+        spawn_id="spawn_alpha",
+        task_id=task.task_id,
+        attempt_id="att_alpha",
+        agent_id="alpha_agent",
+        pid=123,
+        worktree_path="/tmp/wt",
+        branch="feat/alpha",
+        episode_id="",
+        context_hash="sha256:abc",
+        started_at=_now(),
+        data_dir=data_dir,
+    )
+    db.update_spawn("spawn_alpha", ended_at=_now(), outcome="success", data_dir=data_dir)
+    events.append_event(
+        EventKind.GC,
+        payload={"watchdog": "scan", "harvested_spawns": ["spawn_alpha"]},
+        data_dir=data_dir,
+    )
+
+    conn = db.get_connection(data_dir)
+    try:
+        row = conn.execute(
+            "SELECT event_id FROM weave_events ORDER BY sequence_id DESC LIMIT 1"
+        ).fetchone()
+        assert row is not None
+        conn.execute(
+            "UPDATE weave_events SET event_hash = ? WHERE event_id = ?",
+            ("sha256:deadbeef", row["event_id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = build_alpha_gate_report(data_dir=data_dir, ci_log_text="... VERIFIED ...")
+    assert report["overall_pass"] is False
+    assert report["checks"]["weave_chain_intact"]["pass"] is False
 
 
 def test_sanitize_alpha_gate_report_redacts_id_lists() -> None:
