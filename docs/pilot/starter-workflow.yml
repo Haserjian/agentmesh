@@ -1,0 +1,106 @@
+# Proof-Carrying PR -- Starter Workflow
+#
+# Copy this file to .github/workflows/proof-carrying-pr.yml in your repository.
+#
+# What it does:
+#   1. lineage  -- checks if commits carry AgentMesh episode trailers
+#   2. assay-gate -- scores evidence quality of the repo (--min-score 0 = always pass)
+#   3. assay-verify -- builds a proof pack and verifies its integrity
+#
+# To enforce: add lineage, assay-gate, assay-verify as required status checks
+# in your branch protection settings.
+#
+# Docs: https://github.com/Haserjian/agentmesh/tree/main/docs/pilot
+
+name: Proof-Carrying PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # --- Check 1: Lineage Coverage ---
+  # Reports what % of PR commits carry an AgentMesh-Episode trailer.
+  # In baseline mode, this is advisory only (does not block).
+  # Switch to policy-profile: 'strict' to require trailers.
+  lineage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check lineage coverage
+        uses: Haserjian/agentmesh-action@v2
+        with:
+          policy-profile: 'baseline'
+          # Options: baseline (advisory), strict (require trailers),
+          #          enterprise (require trailers + witness signatures)
+
+  # --- Check 2: Evidence Gate ---
+  # Runs `assay gate check` to score the repository's evidence quality.
+  # --min-score 0 means any score passes. Raise this to enforce a floor.
+  assay-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install assay
+        run: pip install "assay-ai>=1.10.1"
+
+      - name: Run evidence gate
+        run: |
+          mkdir -p .assay
+          assay gate check . --min-score 0 --json | tee .assay/gate-check.json
+
+      - name: Upload gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assay-gate-report
+          path: .assay
+          if-no-files-found: warn
+
+  # --- Check 3: Proof Pack Verify ---
+  # Builds a proof pack and verifies its tamper-evident integrity.
+  # This proves assay's verification pipeline works on your repo.
+  assay-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install assay
+        run: pip install "assay-ai>=1.10.1"
+
+      - name: Build and verify proof pack
+        run: |
+          set -euo pipefail
+          mkdir -p .assay-verify
+
+          # Build a canary proof pack
+          assay run \
+            --allow-empty \
+            --output ".assay-verify/proof_pack_ci" \
+            --json \
+            -- echo "proof-carrying-pr canary" \
+            | tee ".assay-verify/run.json"
+
+          # Verify it
+          assay verify-pack ".assay-verify/proof_pack_ci" --json \
+            | tee ".assay-verify/verify.json"
+
+      - name: Upload verify artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assay-verify-report
+          path: .assay-verify
+          if-no-files-found: warn
