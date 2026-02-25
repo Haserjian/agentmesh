@@ -8,11 +8,15 @@ on:
       days:
         description: "Lookback window in days"
         required: false
-        default: "7"
+        default: "30"
       base:
         description: "Base branch"
         required: false
         default: "main"
+      enforcement_date:
+        description: "Enforcement start date (YYYY-MM-DD)"
+        required: false
+        default: "2026-02-24"
 
 permissions:
   contents: read
@@ -22,6 +26,8 @@ permissions:
 jobs:
   evidence-kpi:
     runs-on: ubuntu-latest
+    env:
+      DEFAULT_ENFORCEMENT_DATE: "2026-02-24"
     steps:
       - uses: actions/checkout@v4
 
@@ -38,13 +44,18 @@ jobs:
         run: |
           DAYS="${{ github.event.inputs.days }}"
           BASE="${{ github.event.inputs.base }}"
-          if [ -z "$DAYS" ]; then DAYS="7"; fi
+          ENFORCEMENT_DATE="${{ github.event.inputs.enforcement_date }}"
+          if [ -z "$DAYS" ]; then DAYS="30"; fi
           if [ -z "$BASE" ]; then BASE="main"; fi
+          if [ -z "$ENFORCEMENT_DATE" ]; then ENFORCEMENT_DATE="$DEFAULT_ENFORCEMENT_DATE"; fi
 
           python scripts/evidence_kpi.py \
             --repo "${{ github.repository }}" \
             --base "$BASE" \
             --days "$DAYS" \
+            --slice-days 7 \
+            --slice-days 30 \
+            --enforcement-date "$ENFORCEMENT_DATE" \
             --required-check lineage \
             --required-check assay-gate \
             --required-check assay-verify \

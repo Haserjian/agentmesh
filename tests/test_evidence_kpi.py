@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from datetime import timezone
+
 from agentmesh.evidence_kpi import (
     DEFAULT_REQUIRED_CHECKS,
     compute_coverage,
     evaluate_required_checks,
+    normalize_window_days,
+    parse_date_or_datetime_utc,
     select_latest_check_runs,
 )
 
@@ -58,3 +62,18 @@ def test_compute_coverage_handles_zero_total() -> None:
 
 def test_default_required_checks_include_assay_verify() -> None:
     assert DEFAULT_REQUIRED_CHECKS == ("lineage", "assay-gate", "assay-verify")
+
+
+def test_normalize_window_days_includes_primary_and_defaults() -> None:
+    windows = normalize_window_days(30, [14, 30], include_default_slices=True)
+    assert windows == [7, 14, 30]
+
+
+def test_parse_date_or_datetime_utc_accepts_date_and_iso() -> None:
+    dt_date = parse_date_or_datetime_utc("2026-02-24")
+    assert dt_date.tzinfo == timezone.utc
+    assert dt_date.isoformat() == "2026-02-24T00:00:00+00:00"
+
+    dt_iso = parse_date_or_datetime_utc("2026-02-24T12:34:56Z")
+    assert dt_iso.tzinfo == timezone.utc
+    assert dt_iso.isoformat() == "2026-02-24T12:34:56+00:00"
