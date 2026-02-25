@@ -204,14 +204,20 @@ def _evaluate_merged_prs(
             entry["check_statuses"] = {name: "missing_sha" for name in required_checks}
             entry["missing_checks"] = list(required_checks)
             entry["failed_checks"] = []
+            entry["check_attempt_counts"] = {name: 0 for name in required_checks}
+            entry["rerun_checks"] = []
+            entry["rerun_detected"] = False
             evaluated.append(entry)
             continue
 
         try:
             runs = _get_check_runs(token, owner, repo, sha)
+            attempt_counts, rerun_checks = _summarize_check_attempts(runs, required_checks)
             latest = select_latest_check_runs(runs)
             complete, statuses, missing, failed = evaluate_required_checks(latest, required_checks)
         except Exception as exc:  # pragma: no cover - network failure path
+            attempt_counts = {name: 0 for name in required_checks}
+            rerun_checks = []
             complete = False
             statuses = {name: "api_error" for name in required_checks}
             missing = list(required_checks)
@@ -223,6 +229,9 @@ def _evaluate_merged_prs(
         entry["check_statuses"] = statuses
         entry["missing_checks"] = missing
         entry["failed_checks"] = failed
+        entry["check_attempt_counts"] = attempt_counts
+        entry["rerun_checks"] = rerun_checks
+        entry["rerun_detected"] = bool(rerun_checks)
         evaluated.append(entry)
 
     return evaluated, errors
@@ -282,6 +291,48 @@ def _summarize_check_pass_rates(
     return out
 
 
+def _summarize_check_attempts(
+    check_runs: list[dict[str, Any]],
+    required_checks: list[str],
+) -> tuple[dict[str, int], list[str]]:
+    """Count check attempts for required checks and flag reruns."""
+    counts = {name: 0 for name in required_checks}
+    required = set(required_checks)
+    for run in check_runs:
+        name = str(run.get("name", "")).strip()
+        if name in required:
+            counts[name] += 1
+    rerun_checks = sorted(name for name, count in counts.items() if count > 1)
+    return counts, rerun_checks
+
+
+def _summarize_reliability(
+    prs: list[dict[str, Any]],
+    required_checks: list[str],
+) -> dict[str, Any]:
+    """Summarize rerun/reliability metrics for a PR subset."""
+    total = len(prs)
+    prs_with_reruns = sum(1 for pr in prs if bool(pr.get("rerun_detected")))
+    by_check: dict[str, dict[str, Any]] = {}
+    for check in required_checks:
+        rerun_prs = 0
+        for pr in prs:
+            attempts = pr.get("check_attempt_counts")
+            if isinstance(attempts, dict) and int(attempts.get(check, 0)) > 1:
+                rerun_prs += 1
+        by_check[check] = {
+            "rerun_prs": rerun_prs,
+            "ai_prs_total": total,
+            "rerun_rate_pct": compute_coverage(rerun_prs, total),
+        }
+    return {
+        "prs_with_reruns": prs_with_reruns,
+        "ai_prs_total": total,
+        "rerun_rate_pct": compute_coverage(prs_with_reruns, total),
+        "by_check": by_check,
+    }
+
+
 def build_trend_point(
     report: dict[str, Any],
     *,
@@ -298,6 +349,7 @@ def build_trend_point(
     since_passing = 0
     since_total = 0
     since_check_rates: dict[str, Any] = {}
+    since_reliability: dict[str, Any] = {}
     if isinstance(since, dict):
         since_coverage = float(since.get("coverage_pct", 0.0))
         since_passing = int(since.get("passing_prs", 0))
@@ -305,10 +357,16 @@ def build_trend_point(
         raw_rates = since.get("check_pass_rates")
         if isinstance(raw_rates, dict):
             since_check_rates = raw_rates
+        raw_reliability = since.get("reliability")
+        if isinstance(raw_reliability, dict):
+            since_reliability = raw_reliability
 
     check_rates = report.get("check_pass_rates")
     if not isinstance(check_rates, dict):
         check_rates = {}
+    reliability = report.get("reliability")
+    if not isinstance(reliability, dict):
+        reliability = {}
 
     return {
         "generated_at": str(report.get("generated_at", "")),
@@ -323,7 +381,9 @@ def build_trend_point(
         "since_enforcement_passing_prs": since_passing,
         "since_enforcement_ai_prs_total": since_total,
         "check_pass_rates": check_rates,
+        "reliability": reliability,
         "since_enforcement_check_pass_rates": since_check_rates,
+        "since_enforcement_reliability": since_reliability,
         "run_id": str(run_id),
         "run_attempt": str(run_attempt),
         "run_url": str(run_url),
@@ -436,6 +496,37 @@ def _render_markdown(report: dict[str, Any]) -> str:
             )
     lines.append("")
 
+    lines.append("## Check Reliability")
+    lines.append("")
+    reliability = report.get("reliability") or {}
+    lines.append(
+        f"- PRs with reruns: **{reliability.get('prs_with_reruns', 0)}/"
+        f"{reliability.get('ai_prs_total', 0)} ({reliability.get('rerun_rate_pct', 0.0)}%)**"
+    )
+    since_reliability = (report.get("since_enforcement") or {}).get("reliability") if report.get("enforcement_date") else None
+    if since_reliability:
+        lines.append(
+            f"- Since enforcement reruns: **{since_reliability.get('prs_with_reruns', 0)}/"
+            f"{since_reliability.get('ai_prs_total', 0)} ({since_reliability.get('rerun_rate_pct', 0.0)}%)**"
+        )
+    lines.append("")
+    lines.append("| Check | Primary rerun PRs | Primary rerun rate | Since enforcement rerun PRs | Since enforcement rerun rate |")
+    lines.append("|---|---:|---:|---:|---:|")
+    primary_by_check = reliability.get("by_check") if isinstance(reliability, dict) else {}
+    if not isinstance(primary_by_check, dict):
+        primary_by_check = {}
+    since_by_check = since_reliability.get("by_check") if isinstance(since_reliability, dict) else {}
+    if not isinstance(since_by_check, dict):
+        since_by_check = {}
+    for check in checks:
+        primary = primary_by_check.get(check) or {}
+        since = since_by_check.get(check) or {}
+        lines.append(
+            f"| {check} | {primary.get('rerun_prs', 0)} | {primary.get('rerun_rate_pct', 0.0)}% | "
+            f"{since.get('rerun_prs', 0)} | {since.get('rerun_rate_pct', 0.0)}% |"
+        )
+    lines.append("")
+
     header = "| PR | Merged | Complete | " + " | ".join(checks) + " |"
     sep = "|" + "---|" * (3 + len(checks))
     lines.append(header)
@@ -497,6 +588,7 @@ def run(args: argparse.Namespace) -> int:
     primary_prs = _subset_since(evaluated, primary_since)
     primary_summary = _summarize_subset(primary_prs)
     primary_check_pass_rates = _summarize_check_pass_rates(primary_prs, required_checks)
+    primary_reliability = _summarize_reliability(primary_prs, required_checks)
 
     slices: dict[str, dict[str, Any]] = {}
     for days in window_days:
@@ -511,6 +603,7 @@ def run(args: argparse.Namespace) -> int:
         since_enforcement = _summarize_subset(subset)
         since_enforcement["enforcement_date"] = enforcement_date
         since_enforcement["check_pass_rates"] = _summarize_check_pass_rates(subset, required_checks)
+        since_enforcement["reliability"] = _summarize_reliability(subset, required_checks)
 
     report: dict[str, Any] = {
         "repo": repo_full,
@@ -522,6 +615,7 @@ def run(args: argparse.Namespace) -> int:
         "passing_prs": primary_summary["passing_prs"],
         "coverage_pct": primary_summary["coverage_pct"],
         "check_pass_rates": primary_check_pass_rates,
+        "reliability": primary_reliability,
         "slices": slices,
         "enforcement_date": enforcement_date,
         "since_enforcement": since_enforcement,
