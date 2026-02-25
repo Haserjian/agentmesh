@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import db, events, orch_control, weaver
+from . import assay_bridge, db, events, orch_control, weaver
 from .models import (
     Attempt,
     EventKind,
@@ -358,13 +358,22 @@ def abort_task(
     data_dir: Path | None = None,
 ) -> Task:
     """Abort a task from any non-terminal state."""
-    return transition_task(
+    task = transition_task(
         task_id,
         TaskState.ABORTED,
         agent_id=agent_id,
         reason=reason or "aborted",
         data_dir=data_dir,
     )
+
+    assay_bridge.emit_bridge_event(
+        task_id=task_id,
+        terminal_state="ABORTED",
+        agent_id=agent_id,
+        data_dir=data_dir,
+    )
+
+    return task
 
 
 def complete_task(
@@ -392,6 +401,13 @@ def complete_task(
         kind=EventKind.WORKER_DONE,
         agent_id=agent_id,
         payload={"task_id": task_id, "outcome": "success"},
+        data_dir=data_dir,
+    )
+
+    assay_bridge.emit_bridge_event(
+        task_id=task_id,
+        terminal_state="MERGED",
+        agent_id=agent_id,
         data_dir=data_dir,
     )
 

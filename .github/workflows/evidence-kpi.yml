@@ -1,0 +1,65 @@
+name: Evidence KPI
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Lookback window in days"
+        required: false
+        default: "7"
+      base:
+        description: "Base branch"
+        required: false
+        default: "main"
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+
+jobs:
+  evidence-kpi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Compute evidence KPI
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DAYS="${{ github.event.inputs.days }}"
+          BASE="${{ github.event.inputs.base }}"
+          if [ -z "$DAYS" ]; then DAYS="7"; fi
+          if [ -z "$BASE" ]; then BASE="main"; fi
+
+          python scripts/evidence_kpi.py \
+            --repo "${{ github.repository }}" \
+            --base "$BASE" \
+            --days "$DAYS" \
+            --out-json ".kpi/evidence-chain-kpi.json" \
+            --out-md ".kpi/evidence-chain-kpi.md"
+
+      - name: Add summary
+        if: always()
+        run: |
+          if [ -f .kpi/evidence-chain-kpi.md ]; then
+            cat .kpi/evidence-chain-kpi.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No KPI markdown produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload KPI artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-chain-kpi
+          path: .kpi/
