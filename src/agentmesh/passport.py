@@ -65,7 +65,7 @@ def export_episode(
             (episode_id,),
         ).fetchall()
         weave_rows = conn.execute(
-            "SELECT * FROM weave_events WHERE episode_id = ? ORDER BY created_at",
+            "SELECT * FROM weave_events WHERE episode_id = ? ORDER BY sequence_id, created_at",
             (episode_id,),
         ).fetchall()
     finally:
@@ -216,6 +216,7 @@ def import_meshpack(
 
         # Import weave events
         raw = tf.extractfile("weave_slice.jsonl").read().decode()  # type: ignore
+        next_sequence = db.get_last_weave_sequence(data_dir) + 1
         for line in raw.strip().splitlines():
             if not line.strip():
                 continue
@@ -224,6 +225,7 @@ def import_meshpack(
             from .models import WeaveEvent
             evt = WeaveEvent(
                 event_id=row["event_id"],
+                sequence_id=next_sequence,
                 episode_id=episode_id,
                 prev_hash=row.get("prev_hash", ""),
                 capsule_id=row.get("capsule_id", ""),
@@ -236,6 +238,7 @@ def import_meshpack(
                 created_at=row.get("created_at", ""),
             )
             db.save_weave_event(evt, data_dir)
+            next_sequence += 1
             counts["weave_events"] += 1
 
     return counts

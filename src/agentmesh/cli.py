@@ -1611,6 +1611,12 @@ def weave_verify() -> None:
     if valid:
         console.print("[green]Weave chain valid[/green]")
     else:
+        events.append_event(
+            EventKind.WEAVE_CHAIN_BREAK,
+            agent_id=_auto_agent_id(),
+            payload={"error": err},
+            data_dir=_get_data_dir(),
+        )
         console.print(f"[red]Weave chain BROKEN[/red]: {err}")
         raise typer.Exit(1)
 
@@ -2011,6 +2017,7 @@ def orch_watch(
         EventKind.ORCH_ABORT_ALL.value,
         EventKind.ORCH_LEASE_RENEW.value,
         EventKind.ADAPTER_LOAD.value,
+        EventKind.WEAVE_CHAIN_BREAK.value,
     }
 
     since = 0
