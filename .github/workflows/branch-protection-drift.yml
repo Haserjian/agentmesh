@@ -1,0 +1,116 @@
+name: Branch Protection Drift Guard
+
+on:
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/agentmesh/evidence_kpi.py"
+      - ".github/workflows/evidence-kpi.yml"
+      - ".github/workflows/evidence-enforcement-monitor.yml"
+      - ".github/workflows/branch-protection-drift.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  drift-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check branch protection vs KPI required checks
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          REPO="${{ github.repository }}"
+          BASE="main"
+
+          echo "## Branch Protection Drift Guard" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          # --- 1. Get branch protection required checks ---
+          BP_CHECKS=$(gh api "repos/${REPO}/branches/${BASE}/protection/required_status_checks" \
+            --jq '[.checks[].context] | sort | join(",")' 2>/dev/null || echo "ERROR")
+
+          if [ "$BP_CHECKS" = "ERROR" ]; then
+            echo "::error::Failed to read branch protection rules for ${BASE}. Check token permissions."
+            echo "- **FAIL**: Cannot read branch protection rules." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "Branch protection checks: ${BP_CHECKS}"
+          echo "- Branch protection checks: \`${BP_CHECKS}\`" >> "$GITHUB_STEP_SUMMARY"
+
+          # --- 2. Get KPI required checks from code ---
+          KPI_CHECKS=$(python3 -c "
+          import ast, sys
+          with open('src/agentmesh/evidence_kpi.py') as f:
+              tree = ast.parse(f.read())
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id == 'DEFAULT_REQUIRED_CHECKS':
+                          vals = [elt.value for elt in node.value.elts]
+                          print(','.join(sorted(vals)))
+                          sys.exit(0)
+          print('ERROR')
+          ")
+
+          if [ "$KPI_CHECKS" = "ERROR" ]; then
+            echo "::error::Failed to parse DEFAULT_REQUIRED_CHECKS from evidence_kpi.py."
+            echo "- **FAIL**: Cannot parse KPI required checks." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "KPI required checks: ${KPI_CHECKS}"
+          echo "- KPI required checks: \`${KPI_CHECKS}\`" >> "$GITHUB_STEP_SUMMARY"
+
+          # --- 3. Get workflow --required-check args ---
+          ENFORCEMENT_CHECKS=$(grep -oP '(?<=--required-check )\S+' \
+            .github/workflows/evidence-enforcement-monitor.yml | sort | paste -sd, -)
+          KPI_WF_CHECKS=$(grep -oP '(?<=--required-check )\S+' \
+            .github/workflows/evidence-kpi.yml | sort | paste -sd, -)
+
+          echo "Enforcement workflow checks: ${ENFORCEMENT_CHECKS}"
+          echo "KPI workflow checks: ${KPI_WF_CHECKS}"
+          echo "- Enforcement workflow checks: \`${ENFORCEMENT_CHECKS}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- KPI workflow checks: \`${KPI_WF_CHECKS}\`" >> "$GITHUB_STEP_SUMMARY"
+
+          # --- 4. Compare all four sources ---
+          DRIFT=0
+          DETAILS=""
+
+          if [ "$BP_CHECKS" != "$KPI_CHECKS" ]; then
+            DETAILS="${DETAILS}\n- Branch protection (${BP_CHECKS}) != KPI code (${KPI_CHECKS})"
+            DRIFT=1
+          fi
+
+          if [ "$BP_CHECKS" != "$ENFORCEMENT_CHECKS" ]; then
+            DETAILS="${DETAILS}\n- Branch protection (${BP_CHECKS}) != enforcement workflow (${ENFORCEMENT_CHECKS})"
+            DRIFT=1
+          fi
+
+          if [ "$BP_CHECKS" != "$KPI_WF_CHECKS" ]; then
+            DETAILS="${DETAILS}\n- Branch protection (${BP_CHECKS}) != KPI workflow (${KPI_WF_CHECKS})"
+            DRIFT=1
+          fi
+
+          if [ "$DRIFT" -eq 1 ]; then
+            echo ""
+            echo "::error::Required checks have drifted across sources."
+            echo -e "$DETAILS"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### DRIFT DETECTED" >> "$GITHUB_STEP_SUMMARY"
+            echo -e "$DETAILS" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo ""
+          echo "All four sources agree: ${BP_CHECKS}"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### No drift detected" >> "$GITHUB_STEP_SUMMARY"
+          echo "All sources agree: \`${BP_CHECKS}\`" >> "$GITHUB_STEP_SUMMARY"

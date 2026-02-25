@@ -402,6 +402,7 @@ def abort_task(
         task_id=task_id,
         terminal_state="ABORTED",
         agent_id=agent_id,
+        episode_id=task.episode_id,
         data_dir=data_dir,
     )
 
@@ -436,6 +437,7 @@ def complete_task(
         task_id=task_id,
         terminal_state="MERGED",
         agent_id=agent_id,
+        episode_id=task.episode_id,
         data_dir=data_dir,
     )
 

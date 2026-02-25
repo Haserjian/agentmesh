@@ -82,6 +82,7 @@ def emit_bridge_event(
     terminal_state: str,
     repo_path: Path | None = None,
     agent_id: str = "",
+    episode_id: str = "",
     data_dir: Path | None = None,
 ) -> BridgeResult:
     """Run assay gate check and emit an ``ASSAY_RECEIPT`` event.
@@ -105,7 +106,15 @@ def emit_bridge_event(
         "terminal_state": terminal_state,
         "bridge_status": status,
         "gate_report": gate_report,
+        # Evidence Wire Protocol v0 envelope
+        "_ewp_version": "0",
+        "_ewp_task_id": task_id,
+        "_ewp_origin": "agentmesh/assay_bridge",
     }
+    if episode_id:
+        payload["_ewp_episode_id"] = episode_id
+    if agent_id:
+        payload["_ewp_agent_id"] = agent_id
     if reason:
         payload["degraded_reason"] = reason
 
