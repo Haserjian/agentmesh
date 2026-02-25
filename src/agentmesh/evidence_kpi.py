@@ -23,6 +23,29 @@ def parse_iso8601(value: str) -> datetime:
     return datetime.fromisoformat(value).astimezone(timezone.utc)
 
 
+def parse_date_or_datetime_utc(value: str) -> datetime:
+    """Parse YYYY-MM-DD or ISO8601 into UTC datetime."""
+    raw = value.strip()
+    if not raw:
+        raise ValueError("empty date")
+    if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+        return datetime.strptime(raw, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return parse_iso8601(raw)
+
+
+def normalize_window_days(
+    primary_days: int,
+    extra_slices: list[int],
+    include_default_slices: bool,
+) -> list[int]:
+    """Normalize and de-duplicate window sizes."""
+    out = {primary_days}
+    if include_default_slices:
+        out.update({7, 30})
+    out.update(extra_slices)
+    return sorted(out)
+
+
 def select_latest_check_runs(check_runs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Select latest check run per check name by numeric run id."""
     latest: dict[str, dict[str, Any]] = {}
@@ -159,6 +182,68 @@ def _get_check_runs(
     return runs if isinstance(runs, list) else []
 
 
+def _evaluate_merged_prs(
+    token: str,
+    owner: str,
+    repo: str,
+    base: str,
+    since: datetime,
+    max_prs: int,
+    required_checks: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Evaluate merged PRs from `since` for required check completeness."""
+    prs = _list_merged_prs(token, owner, repo, base, since, max_prs)
+    evaluated: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for pr in prs:
+        sha = pr.get("head_sha", "")
+        if not sha:
+            entry = dict(pr)
+            entry["complete_verified_chain"] = False
+            entry["check_statuses"] = {name: "missing_sha" for name in required_checks}
+            entry["missing_checks"] = list(required_checks)
+            entry["failed_checks"] = []
+            evaluated.append(entry)
+            continue
+
+        try:
+            runs = _get_check_runs(token, owner, repo, sha)
+            latest = select_latest_check_runs(runs)
+            complete, statuses, missing, failed = evaluate_required_checks(latest, required_checks)
+        except Exception as exc:  # pragma: no cover - network failure path
+            complete = False
+            statuses = {name: "api_error" for name in required_checks}
+            missing = list(required_checks)
+            failed = []
+            errors.append(f"PR #{pr['number']}: {exc}")
+
+        entry = dict(pr)
+        entry["complete_verified_chain"] = complete
+        entry["check_statuses"] = statuses
+        entry["missing_checks"] = missing
+        entry["failed_checks"] = failed
+        evaluated.append(entry)
+
+    return evaluated, errors
+
+
+def _subset_since(prs: list[dict[str, Any]], since: datetime) -> list[dict[str, Any]]:
+    """Filter PR records by merged timestamp >= since."""
+    return [pr for pr in prs if parse_iso8601(str(pr["merged_at"])) >= since]
+
+
+def _summarize_subset(prs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize passing/total/coverage for a PR subset."""
+    total = len(prs)
+    passing = sum(1 for pr in prs if pr.get("complete_verified_chain"))
+    return {
+        "ai_prs_total": total,
+        "passing_prs": passing,
+        "coverage_pct": compute_coverage(passing, total),
+    }
+
+
 def _render_markdown(report: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append("# Evidence Chain KPI")
@@ -166,10 +251,35 @@ def _render_markdown(report: dict[str, Any]) -> str:
     lines.append(f"- Repo: `{report['repo']}`")
     lines.append(f"- Base branch: `{report['base']}`")
     lines.append(f"- Lookback: last `{report['window_days']}` day(s)")
-    lines.append(
-        f"- KPI: **{report['passing_prs']}/{report['ai_prs_total']} ({report['coverage_pct']}%)**"
-    )
+    lines.append(f"- Primary KPI: **{report['passing_prs']}/{report['ai_prs_total']} ({report['coverage_pct']}%)**")
+    if report.get("enforcement_date"):
+        since = report.get("since_enforcement") or {}
+        lines.append(
+            f"- Since enforcement (`{report['enforcement_date']}`): "
+            f"**{since.get('passing_prs', 0)}/{since.get('ai_prs_total', 0)} "
+            f"({since.get('coverage_pct', 0.0)}%)**"
+        )
     lines.append(f"- Generated: `{report['generated_at']}`")
+    lines.append("")
+    lines.append("## Coverage Slices")
+    lines.append("")
+    lines.append("| Slice | Passing | Total | Coverage |")
+    lines.append("|---|---:|---:|---:|")
+    lines.append(
+        f"| primary ({report['window_days']}d) | {report['passing_prs']} | "
+        f"{report['ai_prs_total']} | {report['coverage_pct']}% |"
+    )
+    for key in sorted((report.get("slices") or {}).keys(), key=lambda x: int(str(x).rstrip("d"))):
+        item = report["slices"][key]
+        lines.append(
+            f"| {key} | {item['passing_prs']} | {item['ai_prs_total']} | {item['coverage_pct']}% |"
+        )
+    if report.get("enforcement_date"):
+        since = report.get("since_enforcement") or {}
+        lines.append(
+            f"| since_enforcement | {since.get('passing_prs', 0)} | "
+            f"{since.get('ai_prs_total', 0)} | {since.get('coverage_pct', 0.0)}% |"
+        )
     lines.append("")
 
     checks = report["required_checks"]
@@ -208,56 +318,59 @@ def run(args: argparse.Namespace) -> int:
 
     owner, repo = repo_full.split("/", 1)
     required_checks = args.required_check or list(DEFAULT_REQUIRED_CHECKS)
-    since = datetime.now(timezone.utc) - timedelta(days=args.days)
+    window_days = normalize_window_days(args.days, args.slice_days, args.include_default_slices)
+    now = datetime.now(timezone.utc)
+    primary_since = now - timedelta(days=args.days)
+    fetch_since = now - timedelta(days=max(window_days))
 
-    prs = _list_merged_prs(token, owner, repo, args.base, since, args.max_prs)
-    evaluated: list[dict[str, Any]] = []
-    errors: list[str] = []
-    passing = 0
+    enforcement_date = ""
+    enforcement_dt: datetime | None = None
+    if args.enforcement_date:
+        enforcement_dt = parse_date_or_datetime_utc(args.enforcement_date)
+        enforcement_date = enforcement_dt.date().isoformat()
+        if enforcement_dt < fetch_since:
+            fetch_since = enforcement_dt
 
-    for pr in prs:
-        sha = pr.get("head_sha", "")
-        if not sha:
-            entry = dict(pr)
-            entry["complete_verified_chain"] = False
-            entry["check_statuses"] = {name: "missing_sha" for name in required_checks}
-            entry["missing_checks"] = list(required_checks)
-            entry["failed_checks"] = []
-            evaluated.append(entry)
-            continue
+    evaluated, errors = _evaluate_merged_prs(
+        token=token,
+        owner=owner,
+        repo=repo,
+        base=args.base,
+        since=fetch_since,
+        max_prs=args.max_prs,
+        required_checks=required_checks,
+    )
 
-        try:
-            runs = _get_check_runs(token, owner, repo, sha)
-            latest = select_latest_check_runs(runs)
-            complete, statuses, missing, failed = evaluate_required_checks(latest, required_checks)
-        except Exception as exc:  # pragma: no cover - network failure path
-            complete = False
-            statuses = {name: "api_error" for name in required_checks}
-            missing = list(required_checks)
-            failed = []
-            errors.append(f"PR #{pr['number']}: {exc}")
+    primary_prs = _subset_since(evaluated, primary_since)
+    primary_summary = _summarize_subset(primary_prs)
 
-        if complete:
-            passing += 1
+    slices: dict[str, dict[str, Any]] = {}
+    for days in window_days:
+        subset = _subset_since(evaluated, now - timedelta(days=days))
+        summary = _summarize_subset(subset)
+        summary["window_days"] = days
+        slices[f"{days}d"] = summary
 
-        entry = dict(pr)
-        entry["complete_verified_chain"] = complete
-        entry["check_statuses"] = statuses
-        entry["missing_checks"] = missing
-        entry["failed_checks"] = failed
-        evaluated.append(entry)
+    since_enforcement: dict[str, Any] | None = None
+    if enforcement_dt is not None:
+        subset = _subset_since(evaluated, enforcement_dt)
+        since_enforcement = _summarize_subset(subset)
+        since_enforcement["enforcement_date"] = enforcement_date
 
-    total = len(evaluated)
     report: dict[str, Any] = {
         "repo": repo_full,
         "base": args.base,
         "window_days": args.days,
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "required_checks": required_checks,
-        "ai_prs_total": total,
-        "passing_prs": passing,
-        "coverage_pct": compute_coverage(passing, total),
-        "prs": evaluated,
+        "ai_prs_total": primary_summary["ai_prs_total"],
+        "passing_prs": primary_summary["passing_prs"],
+        "coverage_pct": primary_summary["coverage_pct"],
+        "slices": slices,
+        "enforcement_date": enforcement_date,
+        "since_enforcement": since_enforcement,
+        "all_prs_evaluated": len(evaluated),
+        "prs": primary_prs,
         "errors": errors,
     }
 
@@ -282,6 +395,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base", default="main", help="base branch (default: main)")
     parser.add_argument("--days", type=int, default=7, help="lookback window in days")
     parser.add_argument(
+        "--slice-days",
+        type=int,
+        action="append",
+        default=[],
+        help="additional lookback slices in days for reporting (repeatable)",
+    )
+    parser.add_argument(
+        "--include-default-slices",
+        action="store_true",
+        help="include standard 7d and 30d slices in report output",
+    )
+    parser.add_argument(
+        "--enforcement-date",
+        default="",
+        help="enforcement start date (YYYY-MM-DD or ISO8601) for since_enforcement metric",
+    )
+    parser.add_argument(
         "--required-check",
         action="append",
         dest="required_check",
@@ -300,8 +430,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.days <= 0:
         parser.error("--days must be > 0")
+    for day in args.slice_days:
+        if day <= 0:
+            parser.error("--slice-days values must be > 0")
     if args.max_prs <= 0:
         parser.error("--max-prs must be > 0")
+    if args.enforcement_date:
+        try:
+            parse_date_or_datetime_utc(args.enforcement_date)
+        except ValueError as exc:
+            parser.error(f"--enforcement-date invalid: {exc}")
     return run(args)
 
 
