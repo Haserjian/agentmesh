@@ -5,8 +5,10 @@ from datetime import timezone
 from agentmesh.evidence_kpi import (
     DEFAULT_REQUIRED_CHECKS,
     _summarize_check_pass_rates,
+    build_trend_point,
     compute_coverage,
     evaluate_required_checks,
+    merge_trend_history,
     normalize_window_days,
     parse_date_or_datetime_utc,
     select_latest_check_runs,
@@ -130,3 +132,47 @@ def test_summarize_check_pass_rates_handles_missing_status_dict() -> None:
     assert rates["lineage"]["passing_prs"] == 0
     assert rates["lineage"]["missing_prs"] == 2
     assert rates["lineage"]["coverage_pct"] == 0.0
+
+
+def test_build_trend_point_includes_core_metrics() -> None:
+    report = {
+        "generated_at": "2026-02-25T00:00:00Z",
+        "repo": "Haserjian/agentmesh",
+        "base": "main",
+        "window_days": 30,
+        "coverage_pct": 40.0,
+        "passing_prs": 6,
+        "ai_prs_total": 15,
+        "enforcement_date": "2026-02-25T04:40:16Z",
+        "check_pass_rates": {"lineage": {"coverage_pct": 100.0}},
+        "since_enforcement": {
+            "coverage_pct": 100.0,
+            "passing_prs": 6,
+            "ai_prs_total": 6,
+            "check_pass_rates": {"lineage": {"coverage_pct": 100.0}},
+        },
+    }
+    point = build_trend_point(
+        report,
+        run_id="123",
+        run_attempt="1",
+        run_url="https://example/run/123",
+        workflow="Evidence KPI",
+        event_name="schedule",
+        ref_name="main",
+    )
+    assert point["run_id"] == "123"
+    assert point["coverage_pct"] == 40.0
+    assert point["since_enforcement_coverage_pct"] == 100.0
+    assert point["check_pass_rates"]["lineage"]["coverage_pct"] == 100.0
+
+
+def test_merge_trend_history_dedupes_and_caps() -> None:
+    existing = [
+        {"run_id": "100", "generated_at": "2026-02-24T00:00:00Z", "coverage_pct": 0.0},
+        {"run_id": "101", "generated_at": "2026-02-25T00:00:00Z", "coverage_pct": 50.0},
+        {"run_id": "101", "generated_at": "2026-02-25T00:00:00Z", "coverage_pct": 50.0},
+    ]
+    point = {"run_id": "102", "generated_at": "2026-02-26T00:00:00Z", "coverage_pct": 100.0}
+    merged = merge_trend_history(existing, point, max_points=2)
+    assert [row["run_id"] for row in merged] == ["101", "102"]

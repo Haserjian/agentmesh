@@ -282,6 +282,95 @@ def _summarize_check_pass_rates(
     return out
 
 
+def build_trend_point(
+    report: dict[str, Any],
+    *,
+    run_id: str,
+    run_attempt: str,
+    run_url: str,
+    workflow: str,
+    event_name: str,
+    ref_name: str,
+) -> dict[str, Any]:
+    """Build a normalized trend point from a KPI report."""
+    since = report.get("since_enforcement")
+    since_coverage = 0.0
+    since_passing = 0
+    since_total = 0
+    since_check_rates: dict[str, Any] = {}
+    if isinstance(since, dict):
+        since_coverage = float(since.get("coverage_pct", 0.0))
+        since_passing = int(since.get("passing_prs", 0))
+        since_total = int(since.get("ai_prs_total", 0))
+        raw_rates = since.get("check_pass_rates")
+        if isinstance(raw_rates, dict):
+            since_check_rates = raw_rates
+
+    check_rates = report.get("check_pass_rates")
+    if not isinstance(check_rates, dict):
+        check_rates = {}
+
+    return {
+        "generated_at": str(report.get("generated_at", "")),
+        "repo": str(report.get("repo", "")),
+        "base": str(report.get("base", "")),
+        "window_days": int(report.get("window_days", 0)),
+        "coverage_pct": float(report.get("coverage_pct", 0.0)),
+        "passing_prs": int(report.get("passing_prs", 0)),
+        "ai_prs_total": int(report.get("ai_prs_total", 0)),
+        "enforcement_date": str(report.get("enforcement_date", "")),
+        "since_enforcement_coverage_pct": since_coverage,
+        "since_enforcement_passing_prs": since_passing,
+        "since_enforcement_ai_prs_total": since_total,
+        "check_pass_rates": check_rates,
+        "since_enforcement_check_pass_rates": since_check_rates,
+        "run_id": str(run_id),
+        "run_attempt": str(run_attempt),
+        "run_url": str(run_url),
+        "workflow": str(workflow),
+        "event_name": str(event_name),
+        "ref_name": str(ref_name),
+    }
+
+
+def merge_trend_history(
+    existing_points: list[dict[str, Any]],
+    point: dict[str, Any],
+    *,
+    max_points: int = 365,
+) -> list[dict[str, Any]]:
+    """Merge one trend point into history with run-id dedupe and size cap."""
+    merged: list[dict[str, Any]] = []
+    seen_run_ids: set[str] = set()
+    for row in existing_points:
+        if not isinstance(row, dict):
+            continue
+        rid = str(row.get("run_id", "")).strip()
+        if rid and rid in seen_run_ids:
+            continue
+        if rid:
+            seen_run_ids.add(rid)
+        merged.append(row)
+
+    point_run_id = str(point.get("run_id", "")).strip()
+    if point_run_id:
+        replaced = False
+        for idx, row in enumerate(merged):
+            if str(row.get("run_id", "")).strip() == point_run_id:
+                merged[idx] = point
+                replaced = True
+                break
+        if not replaced:
+            merged.append(point)
+    else:
+        merged.append(point)
+
+    merged.sort(key=lambda r: str(r.get("generated_at", "")))
+    if max_points > 0 and len(merged) > max_points:
+        merged = merged[-max_points:]
+    return merged
+
+
 def _render_markdown(report: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append("# Evidence Chain KPI")
