@@ -129,6 +129,40 @@ jobs:
           name: assay-gate-report
           path: .assay/
 
+  assay-verify:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install assay
+        run: pip install "assay-ai>=1.10.1"
+
+      - name: Build and verify proof pack
+        run: |
+          set -euo pipefail
+          mkdir -p .assay-verify
+
+          assay run \
+            --allow-empty \
+            --output ".assay-verify/proof_pack_ci" \
+            --json \
+            -- python -c "print('agentmesh assay verify canary')" \
+            | tee ".assay-verify/run.json"
+
+          assay verify-pack ".assay-verify/proof_pack_ci" --json | tee ".assay-verify/verify.json"
+
+      - name: Upload verify artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assay-verify-report
+          path: .assay-verify/
+
   weave-integrity:
     runs-on: ubuntu-latest
     steps:

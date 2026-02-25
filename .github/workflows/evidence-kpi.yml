@@ -45,6 +45,9 @@ jobs:
             --repo "${{ github.repository }}" \
             --base "$BASE" \
             --days "$DAYS" \
+            --required-check lineage \
+            --required-check assay-gate \
+            --required-check assay-verify \
             --out-json "kpi/evidence-chain-kpi.json" \
             --out-md "kpi/evidence-chain-kpi.md"
 
