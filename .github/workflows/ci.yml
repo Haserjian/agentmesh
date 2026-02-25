@@ -38,7 +38,6 @@ jobs:
   release-check-preview:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,11 +59,11 @@ jobs:
           import json
           import os
           import subprocess
-          import sys
           from pathlib import Path
 
           base = os.environ["BASE_SHA"]
           head = os.environ["HEAD_SHA"]
+          summary_path = Path(os.environ.get("GITHUB_STEP_SUMMARY", ""))
           changed = subprocess.run(
               ["git", "diff", "--name-only", base, head],
               capture_output=True,
@@ -77,7 +76,11 @@ jobs:
               payload = {"release_check": {"ok": True, "exit_code": 0, "skipped": "no_changed_files"}}
               out_path.write_text(json.dumps(payload, indent=2) + "\n")
               print(out_path.read_text())
-              sys.exit(0)
+              if summary_path:
+                  with summary_path.open("a") as f:
+                      f.write("### release-check preview (advisory)\n")
+                      f.write("- result: `skipped (no changed files)`\n")
+              raise SystemExit(0)
 
           cmd = ["agentmesh", "release-check", "--json", *changed]
           print("Running:", " ".join(cmd))
@@ -87,9 +90,49 @@ jobs:
           if stdout:
               print(stdout)
           if stderr:
-              print(stderr, file=sys.stderr)
-          out_path.write_text((stdout or "{}") + "\n")
-          sys.exit(proc.returncode)
+              print(stderr)
+
+          payload: dict
+          if stdout:
+              try:
+                  payload = json.loads(stdout)
+              except json.JSONDecodeError:
+                  payload = {"release_check": {"ok": False, "exit_code": proc.returncode, "raw_stdout": stdout}}
+          else:
+              payload = {"release_check": {"ok": proc.returncode == 0, "exit_code": proc.returncode}}
+
+          release_check = payload.get("release_check", {}) if isinstance(payload, dict) else {}
+          if isinstance(release_check, dict):
+              release_check.setdefault("exit_code", proc.returncode)
+              if stderr:
+                  release_check.setdefault("stderr", stderr)
+              payload["release_check"] = release_check
+
+          out_path.write_text(json.dumps(payload, indent=2) + "\n")
+
+          rc = int(release_check.get("exit_code", proc.returncode)) if isinstance(release_check, dict) else proc.returncode
+          if summary_path:
+              with summary_path.open("a") as f:
+                  f.write("### release-check preview (advisory)\n")
+                  f.write(f"- exit_code: `{rc}`\n")
+                  f.write(f"- changed_files: `{len(changed)}`\n")
+                  if isinstance(release_check, dict):
+                      classification = release_check.get("classification")
+                      if isinstance(classification, dict):
+                          files = classification.get("files", 0)
+                          public = classification.get("public", 0)
+                          private = classification.get("private", 0)
+                          review = classification.get("review", 0)
+                          f.write(
+                              f"- classification: files={files}, public={public}, private={private}, review={review}\n"
+                          )
+
+          if rc != 0:
+              print(
+                  f"::warning::release-check preview flagged this diff (exit {rc}); advisory-only in CI."
+              )
+
+          raise SystemExit(0)
           PY
 
       - name: Upload release-check preview artifact
@@ -98,6 +141,7 @@ jobs:
         with:
           name: release-check-preview
           path: .release-check.json
+          if-no-files-found: warn
 
   assay-gate:
     runs-on: ubuntu-latest
@@ -114,20 +158,26 @@ jobs:
 
       - name: Save baseline on first run
         run: |
+          mkdir -p .assay
           if [ ! -f .assay/score-baseline.json ]; then
             echo "No baseline found, saving initial baseline."
-            assay gate save-baseline . --json
+            assay gate save-baseline . --json | tee .assay/save-baseline.json
+          else
+            echo '{"saved": false, "reason": "baseline_exists"}' > .assay/save-baseline.json
           fi
 
       - name: Run evidence gate
-        run: assay gate check . --min-score 0 --json
+        run: |
+          mkdir -p .assay
+          assay gate check . --min-score 0 --json | tee .assay/gate-check.json
 
       - name: Upload gate report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: assay-gate-report
-          path: .assay/
+          path: .assay
+          if-no-files-found: warn
 
   assay-verify:
     runs-on: ubuntu-latest
@@ -161,7 +211,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: assay-verify-report
-          path: .assay-verify/
+          path: .assay-verify
+          if-no-files-found: warn
 
   weave-integrity:
     runs-on: ubuntu-latest
