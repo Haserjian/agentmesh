@@ -255,6 +255,30 @@ def transition_task(
     return updated
 
 
+def _finalize_open_attempt(
+    task_id: str,
+    *,
+    outcome: str,
+    error_summary: str = "",
+    data_dir: Path | None = None,
+) -> str:
+    """Finalize the latest open attempt, if one exists.
+
+    Returns the attempt ID that was closed, or empty string if no open attempt.
+    """
+    attempts = db.list_attempts(task_id, data_dir)
+    for attempt in reversed(attempts):
+        if not attempt.ended_at:
+            db.end_attempt(
+                attempt.attempt_id,
+                outcome=outcome,
+                error_summary=error_summary,
+                data_dir=data_dir,
+            )
+            return attempt.attempt_id
+    return ""
+
+
 def assign_task(
     task_id: str,
     agent_id: str,
@@ -358,11 +382,19 @@ def abort_task(
     data_dir: Path | None = None,
 ) -> Task:
     """Abort a task from any non-terminal state."""
+    abort_reason = reason or "aborted"
     task = transition_task(
         task_id,
         TaskState.ABORTED,
         agent_id=agent_id,
-        reason=reason or "aborted",
+        reason=abort_reason,
+        data_dir=data_dir,
+    )
+
+    _finalize_open_attempt(
+        task_id,
+        outcome="failure",
+        error_summary=abort_reason,
         data_dir=data_dir,
     )
 
@@ -378,6 +410,7 @@ def abort_task(
 
 def complete_task(
     task_id: str,
+    reason: str = "",
     agent_id: str = "",
     data_dir: Path | None = None,
 ) -> Task:
@@ -386,16 +419,11 @@ def complete_task(
         task_id,
         TaskState.MERGED,
         agent_id=agent_id,
-        reason="merged",
+        reason=reason or "merged",
         data_dir=data_dir,
     )
 
-    # End the latest attempt with success
-    attempts = db.list_attempts(task_id, data_dir)
-    if attempts:
-        latest = attempts[-1]
-        if not latest.ended_at:
-            db.end_attempt(latest.attempt_id, outcome="success", data_dir=data_dir)
+    _finalize_open_attempt(task_id, outcome="success", data_dir=data_dir)
 
     events.append_event(
         kind=EventKind.WORKER_DONE,
@@ -412,3 +440,36 @@ def complete_task(
     )
 
     return task
+
+
+def advance_task(
+    task_id: str,
+    to_state: TaskState,
+    agent_id: str = "",
+    reason: str = "",
+    data_dir: Path | None = None,
+    **update_kwargs: Any,
+) -> Task:
+    """Advance a task with terminal-state side effects applied deterministically."""
+    if to_state == TaskState.MERGED:
+        return complete_task(
+            task_id=task_id,
+            reason=reason,
+            agent_id=agent_id,
+            data_dir=data_dir,
+        )
+    if to_state == TaskState.ABORTED:
+        return abort_task(
+            task_id=task_id,
+            reason=reason,
+            agent_id=agent_id,
+            data_dir=data_dir,
+        )
+    return transition_task(
+        task_id,
+        to_state,
+        agent_id=agent_id,
+        reason=reason,
+        data_dir=data_dir,
+        **update_kwargs,
+    )

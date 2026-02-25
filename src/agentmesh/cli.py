@@ -1766,7 +1766,7 @@ def orch_depends(
 @orch_app.command(name="advance")
 def orch_advance(
     task_id: str = typer.Argument(..., help="Task ID"),
-    to: str = typer.Option(..., "--to", help="Target state (running, pr_open, ci_pass, review_pass, merged)"),
+    to: str = typer.Option(..., "--to", help="Target state (running, pr_open, ci_pass, review_pass, merged, aborted)"),
     reason: str = typer.Option("", "--reason", "-r", help="Reason for transition"),
     pr_url: str = typer.Option("", "--pr-url", help="PR URL (for pr_open transition)"),
     json_out: bool = typer.Option(False, "--json", help="JSON output"),
@@ -1785,7 +1785,7 @@ def orch_advance(
         kwargs["pr_url"] = pr_url
     with _orchestrator_lease(json_out=json_out):
         try:
-            task = orchestrator.transition_task(task_id, to_state, reason=reason, data_dir=_get_data_dir(), **kwargs)
+            task = orchestrator.advance_task(task_id, to_state, reason=reason, data_dir=_get_data_dir(), **kwargs)
         except orchestrator.TransitionError as e:
             if json_out:
                 console.print(json.dumps({"error": str(e)}, indent=2))

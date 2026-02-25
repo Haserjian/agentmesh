@@ -95,6 +95,72 @@ def test_orch_advance_and_abort(tmp_path):
     assert "Aborted" in abort_result.output
 
 
+def _advance_to_review_pass(task_id: str, tmp_path) -> None:
+    for state in ("running", "pr_open", "ci_pass", "review_pass"):
+        args = ["orch", "advance", task_id, "--to", state]
+        if state == "pr_open":
+            args.extend(["--pr-url", "https://github.com/test/repo/pull/999"])
+        res = _invoke(args, tmp_path)
+        assert res.exit_code == 0, res.output
+
+
+def test_orch_advance_merged_closes_attempt_and_emits_assay_receipt(tmp_path):
+    _setup(tmp_path)
+    create_result = _invoke(["orch", "create", "--title", "Merge terminal path", "--json"], tmp_path)
+    task_id = json.loads(create_result.output)["task_id"]
+
+    _invoke(["orch", "assign", task_id, "--agent", "agent_cli"], tmp_path)
+    _advance_to_review_pass(task_id, tmp_path)
+
+    with patch("agentmesh.assay_bridge.shutil.which", return_value=None):
+        merged = _invoke(["orch", "advance", task_id, "--to", "merged", "--json"], tmp_path)
+
+    assert merged.exit_code == 0
+    assert json.loads(merged.output)["state"] == "merged"
+
+    show = _invoke(["orch", "show", task_id, "--json"], tmp_path)
+    payload = json.loads(show.output)
+    assert payload["attempts"]
+    assert payload["attempts"][-1]["ended_at"] != ""
+    assert payload["attempts"][-1]["outcome"] == "success"
+
+    evts = events.read_events(tmp_path)
+    receipts = [
+        e
+        for e in evts
+        if e.kind == EventKind.ASSAY_RECEIPT and e.payload.get("task_id") == task_id
+    ]
+    assert len(receipts) == 1
+    assert receipts[0].payload["terminal_state"] == "MERGED"
+
+
+def test_orch_advance_aborted_emits_assay_receipt(tmp_path):
+    _setup(tmp_path)
+    create_result = _invoke(["orch", "create", "--title", "Abort terminal path", "--json"], tmp_path)
+    task_id = json.loads(create_result.output)["task_id"]
+
+    _invoke(["orch", "assign", task_id, "--agent", "agent_cli"], tmp_path)
+    _invoke(["orch", "advance", task_id, "--to", "running"], tmp_path)
+
+    with patch("agentmesh.assay_bridge.shutil.which", return_value=None):
+        aborted = _invoke(
+            ["orch", "advance", task_id, "--to", "aborted", "--reason", "manual stop", "--json"],
+            tmp_path,
+        )
+
+    assert aborted.exit_code == 0
+    assert json.loads(aborted.output)["state"] == "aborted"
+
+    evts = events.read_events(tmp_path)
+    receipts = [
+        e
+        for e in evts
+        if e.kind == EventKind.ASSAY_RECEIPT and e.payload.get("task_id") == task_id
+    ]
+    assert len(receipts) == 1
+    assert receipts[0].payload["terminal_state"] == "ABORTED"
+
+
 # -- invalid transition --
 
 def test_orch_advance_invalid(tmp_path):
