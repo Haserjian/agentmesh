@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS episodes (
 
 CREATE TABLE IF NOT EXISTS weave_events (
     event_id TEXT PRIMARY KEY,
+    sequence_id INTEGER NOT NULL DEFAULT 0,
     episode_id TEXT NOT NULL DEFAULT '',
     prev_hash TEXT NOT NULL DEFAULT '',
     capsule_id TEXT NOT NULL DEFAULT '',
@@ -236,6 +237,7 @@ def init_db(data_dir: Path | None = None) -> None:
     migrate_claims_add_priority(data_dir)
     migrate_add_tasks_tables(data_dir)
     migrate_add_spawns_table(data_dir)
+    migrate_weave_add_sequence_id(data_dir)
 
 
 def migrate_claims_add_resource_type(data_dir: Path | None = None) -> None:
@@ -501,6 +503,40 @@ def migrate_add_spawns_table(data_dir: Path | None = None) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_spawns_task "
             "ON spawns(task_id)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def migrate_weave_add_sequence_id(data_dir: Path | None = None) -> None:
+    """Add monotonic sequence IDs to weave_events and backfill legacy rows."""
+    conn = get_connection(data_dir)
+    try:
+        if not _table_exists(conn, "weave_events"):
+            return
+
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(weave_events)").fetchall()]
+        if "sequence_id" not in cols:
+            conn.execute(
+                "ALTER TABLE weave_events ADD COLUMN sequence_id INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.commit()
+
+        needs_backfill = conn.execute(
+            "SELECT 1 FROM weave_events WHERE sequence_id <= 0 LIMIT 1"
+        ).fetchone()
+        if needs_backfill is not None:
+            rows = conn.execute(
+                "SELECT event_id FROM weave_events ORDER BY created_at, rowid"
+            ).fetchall()
+            for i, row in enumerate(rows, 1):
+                conn.execute(
+                    "UPDATE weave_events SET sequence_id = ? WHERE event_id = ?",
+                    (i, row["event_id"]),
+                )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_weave_sequence ON weave_events(sequence_id)"
         )
         conn.commit()
     finally:
@@ -1248,8 +1284,10 @@ def _row_to_episode(row: sqlite3.Row) -> Episode:
 
 
 def _row_to_weave_event(row: sqlite3.Row) -> WeaveEvent:
+    keys = row.keys()
     return WeaveEvent(
         event_id=row["event_id"],
+        sequence_id=row["sequence_id"] if "sequence_id" in keys else 0,
         episode_id=row["episode_id"],
         prev_hash=row["prev_hash"],
         capsule_id=row["capsule_id"],
@@ -1423,11 +1461,11 @@ def save_weave_event(event: WeaveEvent, data_dir: Path | None = None) -> None:
     try:
         conn.execute(
             "INSERT INTO weave_events "
-            "(event_id, episode_id, prev_hash, capsule_id, git_commit_sha, "
+            "(event_id, sequence_id, episode_id, prev_hash, capsule_id, git_commit_sha, "
             "git_patch_hash, affected_symbols, trace_id, parent_event_id, "
             "event_hash, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (event.event_id, event.episode_id, event.prev_hash,
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event.event_id, event.sequence_id, event.episode_id, event.prev_hash,
              event.capsule_id, event.git_commit_sha, event.git_patch_hash,
              json.dumps(event.affected_symbols), event.trace_id,
              event.parent_event_id, event.event_hash, event.created_at),
@@ -1441,11 +1479,25 @@ def get_last_weave_hash(data_dir: Path | None = None) -> str:
     conn = get_connection(data_dir)
     try:
         row = conn.execute(
-            "SELECT event_hash FROM weave_events ORDER BY created_at DESC LIMIT 1"
+            "SELECT event_hash FROM weave_events "
+            "ORDER BY sequence_id DESC, created_at DESC LIMIT 1"
         ).fetchone()
         if row is None:
             return "sha256:" + "0" * 64
         return row["event_hash"]
+    finally:
+        conn.close()
+
+
+def get_last_weave_sequence(data_dir: Path | None = None) -> int:
+    conn = get_connection(data_dir)
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(sequence_id), 0) AS max_seq FROM weave_events"
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row["max_seq"] or 0)
     finally:
         conn.close()
 
@@ -1460,21 +1512,23 @@ def list_weave_events(
     try:
         if episode_id and limit:
             rows = conn.execute(
-                "SELECT * FROM weave_events WHERE episode_id = ? ORDER BY created_at LIMIT ?",
+                "SELECT * FROM weave_events WHERE episode_id = ? "
+                "ORDER BY sequence_id, created_at LIMIT ?",
                 (episode_id, limit),
             ).fetchall()
         elif episode_id:
             rows = conn.execute(
-                "SELECT * FROM weave_events WHERE episode_id = ? ORDER BY created_at",
+                "SELECT * FROM weave_events WHERE episode_id = ? "
+                "ORDER BY sequence_id, created_at",
                 (episode_id,),
             ).fetchall()
         elif limit:
             rows = conn.execute(
-                "SELECT * FROM weave_events ORDER BY created_at LIMIT ?", (limit,)
+                "SELECT * FROM weave_events ORDER BY sequence_id, created_at LIMIT ?", (limit,)
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM weave_events ORDER BY created_at"
+                "SELECT * FROM weave_events ORDER BY sequence_id, created_at"
             ).fetchall()
         return [_row_to_weave_event(r) for r in rows]
     finally:

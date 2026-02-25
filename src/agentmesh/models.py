@@ -89,6 +89,7 @@ class EventKind(str, enum.Enum):
     COST_EXCEEDED = "COST_EXCEEDED"
     TEST_MISMATCH = "TEST_MISMATCH"
     ASSAY_RECEIPT = "ASSAY_RECEIPT"
+    WEAVE_CHAIN_BREAK = "WEAVE_CHAIN_BREAK"
 
 
 def _now() -> str:
@@ -166,6 +167,7 @@ class Episode(BaseModel, frozen=True):
 
 class WeaveEvent(BaseModel, frozen=True):
     event_id: str
+    sequence_id: int = 0
     episode_id: str = ""
     prev_hash: str = ""
     capsule_id: str = ""

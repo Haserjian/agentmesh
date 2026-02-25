@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -15,7 +17,9 @@ from .episodes import get_current_episode
 
 def _hash_weave(data: dict[str, Any]) -> str:
     """SHA-256 of canonical JSON (sorted keys, no event_hash field)."""
-    d = {k: v for k, v in data.items() if k != "event_hash"}
+    # Keep legacy hash compatibility: sequence_id is integrity-checked separately
+    # via monotonic gap verification and is excluded from hash material.
+    d = {k: v for k, v in data.items() if k not in {"event_hash", "sequence_id"}}
     canonical = json.dumps(d, sort_keys=True, separators=(",", ":"))
     h = hashlib.sha256(canonical.encode()).hexdigest()
     return f"sha256:{h}"
@@ -39,27 +43,38 @@ def append_weave(
     if episode_id is None:
         episode_id = get_current_episode(data_dir)
 
-    prev_hash = db.get_last_weave_hash(data_dir)
     event_id = f"weave_{uuid.uuid4().hex[:12]}"
     now = _now()
-
-    data = {
-        "event_id": event_id,
-        "episode_id": episode_id,
-        "prev_hash": prev_hash,
-        "capsule_id": capsule_id,
-        "git_commit_sha": git_commit_sha,
-        "git_patch_hash": git_patch_hash,
-        "affected_symbols": affected_symbols or [],
-        "trace_id": trace_id,
-        "parent_event_id": parent_event_id,
-        "created_at": now,
-    }
-    data["event_hash"] = _hash_weave(data)
-
-    event = WeaveEvent(**data)
-    db.save_weave_event(event, data_dir)
-    return event
+    # Unique sequence_id + hash-link can race under concurrent writers.
+    # Retry on sequence collisions and recompute against latest tip.
+    max_retries = 32
+    for attempt in range(max_retries):
+        sequence_id = db.get_last_weave_sequence(data_dir) + 1
+        prev_hash = db.get_last_weave_hash(data_dir)
+        data = {
+            "event_id": event_id,
+            "sequence_id": sequence_id,
+            "episode_id": episode_id,
+            "prev_hash": prev_hash,
+            "capsule_id": capsule_id,
+            "git_commit_sha": git_commit_sha,
+            "git_patch_hash": git_patch_hash,
+            "affected_symbols": affected_symbols or [],
+            "trace_id": trace_id,
+            "parent_event_id": parent_event_id,
+            "created_at": now,
+        }
+        data["event_hash"] = _hash_weave(data)
+        event = WeaveEvent(**data)
+        try:
+            db.save_weave_event(event, data_dir)
+            return event
+        except sqlite3.IntegrityError:
+            if attempt < max_retries - 1:
+                # Light deterministic backoff to reduce thundering-herd retries.
+                time.sleep(0.001 * (attempt + 1))
+            continue
+    raise RuntimeError("failed to append weave event after sequence contention")
 
 
 def verify_weave(data_dir: Path | None = None) -> tuple[bool, str]:
@@ -71,7 +86,13 @@ def verify_weave(data_dir: Path | None = None) -> tuple[bool, str]:
     genesis = "sha256:" + "0" * 64
     prev_hash = genesis
 
+    expected_sequence = 1
     for evt in events:
+        if evt.sequence_id != expected_sequence:
+            return False, (
+                f"Sequence gap at {evt.event_id}: "
+                f"expected sequence_id {expected_sequence}, got {evt.sequence_id}"
+            )
         if evt.prev_hash != prev_hash:
             return False, (
                 f"Chain break at {evt.event_id}: "
@@ -96,6 +117,7 @@ def verify_weave(data_dir: Path | None = None) -> tuple[bool, str]:
                 f"stored={evt.event_hash} computed={computed}"
             )
         prev_hash = evt.event_hash
+        expected_sequence += 1
 
     return True, ""
 
