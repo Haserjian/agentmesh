@@ -1,0 +1,26 @@
+{
+  "lock_version": "1.0",
+  "assay_version_min": "1.11.1",
+  "pack_format_version": "0.1.0",
+  "receipt_schema_version": "3.0",
+  "run_cards": [
+    {
+      "id": "receipt_completeness",
+      "name": "Receipt Completeness",
+      "claim_set_hash": "0b9affe4a6e67d069cb3413aaf982fc05110dae0af8a0b4dce180e63e5d564dc"
+    }
+  ],
+  "run_cards_composite_hash": "df2e18533a1433cf2a21645d00862cced6355b62da7d969c7e9a377e65b26663",
+  "claim_set_hash": "0b9affe4a6e67d069cb3413aaf982fc05110dae0af8a0b4dce180e63e5d564dc",
+  "exit_contract": {
+    "0": "integrity_pass AND claims_pass",
+    "1": "integrity_pass AND claims_fail",
+    "2": "integrity_fail"
+  },
+  "signer_policy": {
+    "mode": "any",
+    "allowed_fingerprints": []
+  },
+  "locked_at": "2026-03-01T05:07:18.369441+00:00",
+  "locked_by_assay_version": "1.11.1"
+}

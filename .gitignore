@@ -15,3 +15,8 @@ ci-witness.log
 tmp_alpha_gate_data/
 .agentmesh/runs/
 docs/alpha-gate-report.json
+
+# Assay evidence artifacts (transient)
+.assay/
+.assay-verify/
+proof_pack_*/
