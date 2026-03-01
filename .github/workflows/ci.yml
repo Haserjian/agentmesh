@@ -169,7 +169,7 @@ jobs:
       - name: Run evidence gate
         run: |
           mkdir -p .assay
-          assay gate check . --min-score 0 --json | tee .assay/gate-check.json
+          assay gate check . --min-score 0 --require-lock --json | tee .assay/gate-check.json
 
       - name: Upload gate report
         if: always()

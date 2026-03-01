@@ -1,0 +1,10 @@
+version: "1"
+project: agentmesh
+scan:
+  include:
+    - "src/**/*.py"
+  exclude:
+    - "**/test_*.py"
+ci:
+  min_score: 0
+  require_lock: true
