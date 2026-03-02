@@ -1,0 +1,5 @@
+version: "1"
+
+# AgentMesh pilot config — used by local pilot_run.py
+test_cmd: "python -c print(0)"
+mode: high-only

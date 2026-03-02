@@ -1,0 +1,26 @@
+name: Assay Pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_cmd:
+        description: "Test command"
+        required: false
+        type: string
+        default: "python -c print(0)"
+      mode:
+        description: "Scan mode"
+        required: false
+        type: choice
+        options:
+          - high-only
+          - high+medium
+        default: "high-only"
+
+jobs:
+  pilot:
+    uses: Haserjian/ccio/.github/workflows/assay-pilot.yml@ef548c04d66316761bc25d61c18d01fd407558ed
+    with:
+      test_cmd: ${{ inputs.test_cmd || 'python -c print(0)' }}
+      mode: ${{ inputs.mode || 'high-only' }}
+      python_version: "3.12"
