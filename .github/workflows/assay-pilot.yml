@@ -19,7 +19,7 @@ on:
 
 jobs:
   pilot:
-    uses: Haserjian/ccio/.github/workflows/assay-pilot.yml@ef548c04d66316761bc25d61c18d01fd407558ed
+    uses: Haserjian/ccio/.github/workflows/assay-pilot.yml@main
     with:
       test_cmd: ${{ inputs.test_cmd || 'python -c print(0)' }}
       mode: ${{ inputs.mode || 'high-only' }}
