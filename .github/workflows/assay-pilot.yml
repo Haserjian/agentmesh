@@ -18,9 +18,81 @@ on:
         default: "high-only"
 
 jobs:
-  pilot:
-    uses: Haserjian/ccio/.github/workflows/assay-pilot.yml@main
-    with:
-      test_cmd: ${{ inputs.test_cmd || 'python -c print(0)' }}
-      mode: ${{ inputs.mode || 'high-only' }}
-      python_version: "3.12"
+  assay-pilot:
+    name: Assay pilot run
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml "assay-ai==1.11.1"
+
+      - name: Verify assay is available
+        run: |
+          if ! command -v assay >/dev/null 2>&1; then
+            echo "::error::assay binary not found"
+            exit 1
+          fi
+          echo "assay found: $(command -v assay)"
+
+      - name: Scan
+        run: |
+          MODE="${{ inputs.mode || 'high-only' }}"
+          SCAN_ARGS="scan . --report"
+          if [ "$MODE" = "high+medium" ]; then
+            SCAN_ARGS="scan . --report --min-confidence medium"
+          fi
+          assay $SCAN_ARGS || echo "[assay-pilot] scan returned non-zero (may be expected)"
+
+      - name: Score before
+        run: |
+          assay score .
+          cp evidence_readiness_report.json score_before.json 2>/dev/null || echo "[assay-pilot] no score report produced"
+
+      - name: Run tests under assay
+        run: |
+          TEST_CMD="${{ inputs.test_cmd || 'python -c print(0)' }}"
+          assay run -c receipt_completeness -o .work/proof_pack --allow-empty -- $TEST_CMD
+
+      - name: Verify pack
+        run: assay verify-pack .work/proof_pack
+
+      - name: Score after
+        run: |
+          assay score .
+          cp evidence_readiness_report.json score_after.json 2>/dev/null || echo "[assay-pilot] no score report produced"
+
+      - name: Assemble bundle
+        run: |
+          mkdir -p pilot_bundle/score pilot_bundle/proof
+          cp score_before.json pilot_bundle/score/ 2>/dev/null || true
+          cp score_after.json pilot_bundle/score/ 2>/dev/null || true
+          cp -r .work/proof_pack/* pilot_bundle/proof/ 2>/dev/null || true
+          cp evidence_gap_report.json pilot_bundle/ 2>/dev/null || true
+          MODE="${{ inputs.mode || 'high-only' }}"
+          printf '{"workflow":"assay-pilot","mode":"%s","source":"ccio-adoption-kit"}\n' "$MODE" > pilot_bundle/ci_metadata.json
+
+      - name: Summary
+        run: |
+          PACK="missing"
+          SCORE_BEFORE="missing"
+          SCORE_AFTER="missing"
+          [ -f pilot_bundle/proof/pack_manifest.json ] && PACK="present"
+          [ -f pilot_bundle/score/score_before.json ] && SCORE_BEFORE="present"
+          [ -f pilot_bundle/score/score_after.json ] && SCORE_AFTER="present"
+          echo "pack: $PACK | score_before: $SCORE_BEFORE | score_after: $SCORE_AFTER | bundle: ready"
+
+      - name: Upload pilot bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: pilot_bundle
+          path: pilot_bundle/
