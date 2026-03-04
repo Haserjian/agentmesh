@@ -1,5 +1,9 @@
 # AgentMesh
 
+[![PyPI](https://img.shields.io/pypi/v/agentmesh-core)](https://pypi.org/project/agentmesh-core/)
+[![Tests](https://img.shields.io/badge/tests-318%20passed-brightgreen)]()
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 Local-first multi-agent coordination and provenance for coding workflows.
 
 AgentMesh adds deterministic coordination (claims, waits, steals), commit-linked lineage (`AgentMesh-Episode` trailers + weave events), and portable handoff bundles (`.meshpack`) on top of normal git workflows.
@@ -40,8 +44,20 @@ When multiple AI agents (or humans) work in the same repo, AgentMesh prevents ch
 - **Claims**: agents lock files/ports/resources before editing. Conflicts are blocked, not merged.
 - **Episodes**: every work session gets a unique ID (`ep_...`) that binds claims, capsules, and commits.
 - **Capsules**: structured context bundles (SBAR format) for zero-ramp-up handoffs between agents.
-- **Weaver**: hash-chained provenance linking capsules to git commits. Every change is traceable.
-- **Commit trailers**: `agentmesh commit` injects `AgentMesh-Episode:` by default, and can attach signed witness trailers (`AgentMesh-KeyID`, `AgentMesh-Witness`, `AgentMesh-Sig` + portable witness payload chunks) when witness support + keys are present.
+- **Weaver**: hash-chained provenance linking capsules to git commits. Every change is traceable. Gap detection catches omissions (`WEAVE_CHAIN_BREAK` event on failure).
+- **Witness**: optional Ed25519 signing of commits and provenance records. Adds cryptographic proof of authorship.
+- **Commit trailers**: `agentmesh commit` injects `AgentMesh-Episode:` by default, and can attach signed witness trailers when witness support + keys are present.
+
+## Evidence Pipeline
+
+AgentMesh integrates with [Assay](https://github.com/Haserjian/assay) to produce tamper-evident evidence automatically:
+
+- **Assay Bridge**: every merged or aborted task emits an `ASSAY_RECEIPT` event via subprocess call. If Assay isn't installed, the bridge degrades gracefully.
+- **Alpha Gate**: release gating with 6 checks (merged task count, witness verification, weave chain integrity, full transition receipts, watchdog handling, no orphan loss).
+- **Evidence KPI**: nightly workflow tracking evidence pipeline health — pass rates, enforcement dates, trend history.
+- **Evidence Wire Protocol v0**: canonical `_ewp_*` identity envelope for cross-repo evidence flow.
+
+Every PR to `main` must pass lineage + assay-gate + assay-verify + weave-integrity checks.
 
 ## Optional Witness Signing
 
@@ -72,44 +88,27 @@ jobs:
   lineage:
     runs-on: ubuntu-latest
     steps:
-      - uses: Haserjian/agentmesh-action@v1
+      - uses: Haserjian/agentmesh-action@v2
 ```
 
-The action posts a sticky PR comment showing commit coverage. Set `require-trailers: "true"` to enforce episode lineage, and `verify-witness: "true"` + `require-witness: "true"` to enforce cryptographic witness verification.
+The action posts a sticky PR comment showing commit coverage. Set `require-trailers: "true"` to enforce episode lineage, and `verify-witness: "true"` + `require-witness: "true"` to enforce cryptographic witness verification. See [agentmesh-action](https://github.com/Haserjian/agentmesh-action) for policy profiles (`baseline`, `strict`, `enterprise`).
 
-## Documentation Policy
+## Documentation
 
-- Public/private split guidance: [`docs/public-private-boundary.md`](./docs/public-private-boundary.md)
-- Decision matrix + release gate: [`docs/public-private-decision-matrix.md`](./docs/public-private-decision-matrix.md)
-- Alpha gate operator runbook: [`docs/alpha-gate-runbook.md`](./docs/alpha-gate-runbook.md)
-- License transition policy: [`docs/license-policy.md`](./docs/license-policy.md)
+- Coordination playbook: [`AGENTS.md`](./AGENTS.md)
+- Public/private boundary: [`docs/public-private-boundary.md`](./docs/public-private-boundary.md)
+- Alpha gate runbook: [`docs/alpha-gate-runbook.md`](./docs/alpha-gate-runbook.md)
+- Evidence Wire Protocol: [`docs/evidence-wire-protocol-v0.md`](./docs/evidence-wire-protocol-v0.md)
+- License transition: [`docs/license-policy.md`](./docs/license-policy.md)
 
-Generated canary artifacts (CI logs, raw gate reports) should be treated as private by default. Publish sanitized summaries/templates for OSS.
+## Related Repos
 
-Use the classifier before publishing:
-
-```bash
-agentmesh classify --staged --fail-on-private --fail-on-review
-```
-
-Release preflight (deterministic gate for agents/automation):
-
-```bash
-agentmesh release-check --staged --require-witness --json
-```
-
-Sanitize private alpha gate artifacts before publishing:
-
-```bash
-agentmesh sanitize-alpha-gate-report \
-  --in .agentmesh/runs/alpha-gate-report.json \
-  --out docs/alpha-gate-report.public.json
-```
-
-CI rollout recommendation:
-- Start with non-blocking `release-check` preview artifacts.
-- Keep private-artifact blocking enabled.
-- Switch `release-check` to blocking after policy tuning.
+| Repo | Purpose |
+|------|---------|
+| [assay](https://github.com/Haserjian/assay) | Evidence compiler CLI (tamper-evident audit trails for AI) |
+| [assay-verify-action](https://github.com/Haserjian/assay-verify-action) | GitHub Action for CI evidence verification |
+| [assay-ledger](https://github.com/Haserjian/assay-ledger) | Public transparency ledger |
+| [agentmesh-action](https://github.com/Haserjian/agentmesh-action) | GitHub Action for lineage + witness checks |
 
 ## License
 
