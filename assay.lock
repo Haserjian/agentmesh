@@ -1,6 +1,6 @@
 {
   "lock_version": "1.0",
-  "assay_version_min": "1.11.1",
+  "assay_version_min": "1.14.0",
   "pack_format_version": "0.1.0",
   "receipt_schema_version": "3.0",
   "run_cards": [
@@ -23,6 +23,6 @@
       "a211e933a251212953e8f535dc595d2c8c11545cee2f00a2ba20f4aa04e4b03d"
     ]
   },
-  "locked_at": "2026-03-01T05:07:18.369441+00:00",
-  "locked_by_assay_version": "1.11.1"
+  "locked_at": "2026-03-04T10:08:54.217961+00:00",
+  "locked_by_assay_version": "1.14.0"
 }

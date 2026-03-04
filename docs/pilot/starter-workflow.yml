@@ -103,6 +103,7 @@ jobs:
 
           # Build a canary proof pack
           assay run \
+            -c receipt_completeness \
             --allow-empty \
             --output ".assay-verify/proof_pack_ci" \
             --json \

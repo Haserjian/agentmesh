@@ -103,6 +103,7 @@ jobs:
           set -euo pipefail
           mkdir -p .assay-verify
           assay run \
+            -c receipt_completeness \
             --allow-empty \
             --output ".assay-verify/proof_pack_ci" \
             --json \
