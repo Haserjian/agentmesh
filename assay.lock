@@ -18,8 +18,10 @@
     "2": "integrity_fail"
   },
   "signer_policy": {
-    "mode": "any",
-    "allowed_fingerprints": []
+    "mode": "allowlist",
+    "allowed_fingerprints": [
+      "a211e933a251212953e8f535dc595d2c8c11545cee2f00a2ba20f4aa04e4b03d"
+    ]
   },
   "locked_at": "2026-03-01T05:07:18.369441+00:00",
   "locked_by_assay_version": "1.11.1"

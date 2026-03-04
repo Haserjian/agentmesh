@@ -22,6 +22,16 @@ No local tooling required. Everything runs in GitHub Actions.
 
 ## Step 1: Add the workflow file (2 min)
 
+Set two repository secrets first (used to import the pinned signer key in CI):
+
+```bash
+# one-time key export (if you don't already have these files)
+assay key export ci-assay-signer --private -o .
+
+gh secret set ASSAY_SIGNER_KEY_B64 -R <owner>/<repo> < ci-assay-signer.key.b64
+gh secret set ASSAY_SIGNER_PUB_B64 -R <owner>/<repo> < ci-assay-signer.pub.b64
+```
+
 Copy `.github/workflows/proof-carrying-pr.yml` from the [starter workflow](./starter-workflow.yml) into your repository.
 
 Or create it manually:
@@ -58,6 +68,7 @@ jobs:
       - name: Run evidence gate
         run: |
           mkdir -p .assay
+          assay lock check assay.lock --json | tee .assay/lock-check.json
           assay gate check . --min-score 0 --json | tee .assay/gate-check.json
       - uses: actions/upload-artifact@v4
         if: always()
@@ -73,6 +84,20 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install "assay-ai>=1.10.1"
+      - name: Import pinned assay signer
+        env:
+          ASSAY_SIGNER_KEY_B64: ${{ secrets.ASSAY_SIGNER_KEY_B64 }}
+          ASSAY_SIGNER_PUB_B64: ${{ secrets.ASSAY_SIGNER_PUB_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p .assay-signing
+          printf '%s' "$ASSAY_SIGNER_PUB_B64" > .assay-signing/ci-assay-signer.pub.b64
+          printf '%s' "$ASSAY_SIGNER_KEY_B64" > .assay-signing/ci-assay-signer.key.b64
+          assay key import .assay-signing/ci-assay-signer.pub.b64 \
+            --private .assay-signing/ci-assay-signer.key.b64 \
+            --signer ci-assay-signer \
+            --set-active \
+            --json > .assay-signing/import.json
       - name: Build and verify proof pack
         run: |
           set -euo pipefail
@@ -83,7 +108,7 @@ jobs:
             --json \
             -- echo "proof-carrying-pr canary" \
             | tee ".assay-verify/run.json"
-          assay verify-pack ".assay-verify/proof_pack_ci" --json \
+          assay verify-pack ".assay-verify/proof_pack_ci" --lock assay.lock --json \
             | tee ".assay-verify/verify.json"
       - uses: actions/upload-artifact@v4
         if: always()
