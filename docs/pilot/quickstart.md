@@ -64,7 +64,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install "assay-ai>=1.10.1"
+      - run: pip install "assay-ai @ git+https://github.com/Haserjian/assay.git@13db5ba"
       - name: Run evidence gate
         run: |
           mkdir -p .assay
@@ -108,7 +108,7 @@ jobs:
             --json \
             -- echo "proof-carrying-pr canary" \
             | tee ".assay-verify/run.json"
-          assay verify-pack ".assay-verify/proof_pack_ci" --lock assay.lock --json \
+          assay verify-pack ".assay-verify/proof_pack_ci" --lock assay.lock --max-age-hours 24 --json \
             | tee ".assay-verify/verify.json"
       - uses: actions/upload-artifact@v4
         if: always()

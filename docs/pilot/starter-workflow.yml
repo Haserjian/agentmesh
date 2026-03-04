@@ -50,7 +50,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install assay
-        run: pip install "assay-ai>=1.10.1"
+        run: pip install "assay-ai @ git+https://github.com/Haserjian/assay.git@13db5ba"
 
       - name: Run evidence gate
         run: |
@@ -110,7 +110,7 @@ jobs:
             | tee ".assay-verify/run.json"
 
           # Verify it
-          assay verify-pack ".assay-verify/proof_pack_ci" --lock assay.lock --json \
+          assay verify-pack ".assay-verify/proof_pack_ci" --lock assay.lock --max-age-hours 24 --json \
             | tee ".assay-verify/verify.json"
 
       - name: Upload verify artifacts

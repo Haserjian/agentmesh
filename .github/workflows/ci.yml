@@ -154,7 +154,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install assay
-        run: pip install "assay-ai>=1.10.1"
+        run: pip install "assay-ai @ git+https://github.com/Haserjian/assay.git@13db5ba"
 
       - name: Save baseline on first run
         run: |
@@ -191,7 +191,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install assay
-        run: pip install "assay-ai>=1.10.1"
+        run: pip install "assay-ai @ git+https://github.com/Haserjian/assay.git@13db5ba"
 
       - name: Import pinned assay signer
         env:
@@ -224,7 +224,7 @@ jobs:
             -- python -c "print('agentmesh assay verify canary')" \
             | tee ".assay-verify/run.json"
 
-          assay verify-pack ".assay-verify/proof_pack_ci" --lock assay.lock --json | tee ".assay-verify/verify.json"
+          assay verify-pack ".assay-verify/proof_pack_ci" --lock assay.lock --max-age-hours 24 --json | tee ".assay-verify/verify.json"
 
       - name: Upload verify artifacts
         if: always()
