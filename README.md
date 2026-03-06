@@ -8,12 +8,14 @@ Local-first multi-agent coordination and provenance for coding workflows.
 
 AgentMesh adds deterministic coordination (claims, waits, steals), commit-linked lineage (`AgentMesh-Episode` trailers + weave events), and portable handoff bundles (`.meshpack`) on top of normal git workflows.
 
+In the broader Assay/CCIO stack, AgentMesh is the **public provenance engine**: it records how agent work happened and feeds evidence systems such as Assay. It can be adopted standalone, but it is not the primary questionnaire/revenue wedge for that stack.
+
 ## Install
 
 ```bash
 pipx install agentmesh-core   # recommended (isolated)
 # or
-pip install agentmesh-core
+pip install agentmesh-core    # on Windows: py -m pip install agentmesh-core
 
 # optional: commit witness signing (Ed25519)
 pipx install "agentmesh-core[witness]"
@@ -51,6 +53,8 @@ When multiple AI agents (or humans) work in the same repo, AgentMesh prevents ch
 ## Evidence Pipeline
 
 AgentMesh integrates with [Assay](https://github.com/Haserjian/assay) to produce tamper-evident evidence automatically:
+
+- **Role split**: AgentMesh records runtime lineage and provenance; Assay verifies and packages trust artifacts. AgentMesh answers "how did this work happen?" Assay answers "what can we prove about it?"
 
 - **Assay Bridge**: every merged or aborted task emits an `ASSAY_RECEIPT` event via subprocess call. If Assay isn't installed, the bridge degrades gracefully.
 - **Alpha Gate**: release gating with 6 checks (merged task count, witness verification, weave chain integrity, full transition receipts, watchdog handling, no orphan loss).
