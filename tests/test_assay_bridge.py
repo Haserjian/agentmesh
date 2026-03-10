@@ -88,6 +88,7 @@ def test_bridge_ok_assay_pass(data_dir, repo_dir):
     assert result.status == "BRIDGE_EMIT_OK"
     assert result.gate_report["result"] == "PASS"
     assert result.reason == ""
+    assert result.envelope is not None
 
 
 # -- 2. OK: assay FAIL (valid gate result) --
@@ -108,6 +109,7 @@ def test_bridge_ok_assay_fail(data_dir, repo_dir):
     assert result.status == "BRIDGE_EMIT_OK"
     assert result.gate_report["result"] == "FAIL"
     assert result.reason == ""
+    assert result.envelope is not None
 
 
 # -- 3. DEGRADED: no assay CLI --
@@ -252,6 +254,7 @@ def test_bridge_always_emits_event_ok(data_dir, repo_dir):
     assert receipts[0].payload["bridge_status"] == "BRIDGE_EMIT_OK"
     assert receipts[0].payload["task_id"] == "task_evt_ok"
     assert "degraded_reason" not in receipts[0].payload
+    assert "ccoi_envelope" in receipts[0].payload
 
 
 # -- 9. Event always emitted on DEGRADED --
@@ -274,6 +277,7 @@ def test_bridge_always_emits_event_degraded(data_dir):
     assert len(receipts) == 1
     assert receipts[0].payload["bridge_status"] == "BRIDGE_EMIT_DEGRADED"
     assert receipts[0].payload["degraded_reason"]
+    assert "ccoi_envelope" in receipts[0].payload
 
 
 # -- 10. Integration: complete_task emits bridge event --

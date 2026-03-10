@@ -6,6 +6,13 @@ event log. Two outcomes only:
 
 * ``BRIDGE_EMIT_OK`` -- assay ran and produced a gate report.
 * ``BRIDGE_EMIT_DEGRADED`` -- assay unavailable, errored, or no repo path found.
+
+CCOI adoption (v0.1b):
+    This is the first non-advisory cross-organ envelope seam.  agentmesh
+    (source) calls assay-toolkit (target) with AUDITING authority via
+    subprocess.  The envelope is a dict following CCOI_V0_1.md §4.1 —
+    no import from ccio.  The protocol is proven by shape, not by shared
+    library coupling.
 """
 
 from __future__ import annotations
@@ -14,6 +21,7 @@ import json
 import shutil
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +31,69 @@ from .models import EventKind
 _OK = "BRIDGE_EMIT_OK"
 _DEGRADED = "BRIDGE_EMIT_DEGRADED"
 
+# CCOI envelope required fields (CCOI_V0_1.md §4.1).
+# This is the wire contract — no ccio import needed.
+CCOI_ENVELOPE_REQUIRED_FIELDS = frozenset({
+    "ccoi_version",
+    "source_organ",
+    "target_organ",
+    "authority_class",
+    "primitive",
+    "correlation_id",
+    "ts_sent",
+    "payload",
+})
+
+
+def _build_ccoi_envelope(
+    *,
+    task_id: str,
+    terminal_state: str,
+    bridge_status: str,
+    gate_report: dict[str, Any],
+    agent_id: str = "",
+    episode_id: str = "",
+    degraded_reason: str = "",
+) -> dict[str, Any]:
+    """Build a CCOI-shaped envelope dict for this bridge seam.
+
+    Pure function, no I/O, no ccio dependency.  Follows CCOI_V0_1.md §4.1
+    with AUDITING authority and QUERY primitive.
+
+    The envelope is emitted on both OK and DEGRADED paths — transport
+    metadata survives execution failure.
+    """
+    envelope: dict[str, Any] = {
+        "ccoi_version": "0.1",
+        "source_organ": "agentmesh",
+        "target_organ": "assay-toolkit",
+        "authority_class": "AUDITING",
+        "primitive": "QUERY",
+        "correlation_id": task_id,
+        "ts_sent": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "payload": {
+            "bridge": "assay_bridge",
+            "action": "gate_check",
+            "terminal_state": terminal_state,
+            "bridge_status": bridge_status,
+            "gate_report": gate_report,
+        },
+    }
+    if agent_id:
+        envelope["payload"]["agent_id"] = agent_id
+    if episode_id:
+        envelope["payload"]["episode_id"] = episode_id
+    if degraded_reason:
+        envelope["payload"]["degraded_reason"] = degraded_reason
+    return envelope
+
 
 @dataclass(frozen=True)
 class BridgeResult:
     status: str  # _OK | _DEGRADED
     gate_report: dict[str, Any]
     reason: str  # empty on OK, human-readable on degraded
+    envelope: dict[str, Any] | None = None  # CCOI envelope when emitted
 
 
 def _find_repo_path(task_id: str, data_dir: Path | None) -> Path | None:
@@ -113,20 +178,29 @@ def emit_bridge_event(
     else:
         status, gate_report, reason = _run_assay_gate(repo_path)
 
+    # Build CCOI envelope — always, on both OK and DEGRADED paths.
+    envelope = _build_ccoi_envelope(
+        task_id=task_id,
+        terminal_state=terminal_state,
+        bridge_status=status,
+        gate_report=gate_report,
+        agent_id=agent_id,
+        episode_id=episode_id,
+        degraded_reason=reason,
+    )
+
     payload: dict[str, Any] = {
         "task_id": task_id,
         "terminal_state": terminal_state,
         "bridge_status": status,
         "gate_report": gate_report,
-        # Evidence Wire Protocol v0 envelope
-        "_ewp_version": "0",
-        "_ewp_task_id": task_id,
-        "_ewp_origin": "agentmesh/assay_bridge",
+        # CCOI envelope (v0.1 §4.1) — replaces EWP v0
+        "ccoi_envelope": envelope,
     }
     if episode_id:
-        payload["_ewp_episode_id"] = episode_id
+        payload["episode_id"] = episode_id
     if agent_id:
-        payload["_ewp_agent_id"] = agent_id
+        payload["agent_id"] = agent_id
     if reason:
         payload["degraded_reason"] = reason
 
@@ -137,4 +211,4 @@ def emit_bridge_event(
         data_dir=data_dir,
     )
 
-    return BridgeResult(status=status, gate_report=gate_report, reason=reason)
+    return BridgeResult(status=status, gate_report=gate_report, reason=reason, envelope=envelope)
