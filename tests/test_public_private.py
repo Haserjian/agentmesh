@@ -123,3 +123,16 @@ def test_classify_docs_public_json_as_public(tmp_path: Path, monkeypatch) -> Non
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["results"][0]["classification"] == PUBLIC
+
+
+def test_classify_warns_on_malformed_policy(tmp_path: Path, capsys) -> None:
+    repo = tmp_path / "repo"
+    (repo / ".agentmesh").mkdir(parents=True)
+    (repo / "docs").mkdir(parents=True)
+    (repo / "docs" / "note.md").write_text("plain docs\n")
+    (repo / ".agentmesh" / "policy.json").write_text("{not-json}\n")
+
+    result = classify_path(repo / "docs" / "note.md", repo_root=repo)
+
+    assert result.classification == REVIEW
+    assert "failed to parse" in capsys.readouterr().err

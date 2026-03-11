@@ -7,6 +7,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -126,7 +127,8 @@ def _load_repo_policy(repo_cwd: str) -> dict[str, Any]:
         return {}
     try:
         data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print(f"WARNING: failed to parse {path}: {exc}", file=sys.stderr)
         return {}
     return data if isinstance(data, dict) else {}
 

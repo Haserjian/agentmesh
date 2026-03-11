@@ -263,7 +263,7 @@ def test_cli_commit_emits_assay_receipt_event(tmp_path: Path, tmp_data_dir: Path
     repo = _init_repo(tmp_path / "repo")
     (repo / ".agentmesh").mkdir(parents=True, exist_ok=True)
     (repo / ".agentmesh" / "policy.json").write_text(
-        '{"assay":{"emit_on_commit":true,"command":"python -c \\"print(123)\\""}}'
+        '{"assay":{"emit_on_commit":true,"command":"python3 -c \\"print(123)\\""}}'
     )
     (repo / "with_assay.py").write_text("print('x')\n")
     subprocess.run(["git", "add", "with_assay.py"], cwd=str(repo), capture_output=True, check=True)

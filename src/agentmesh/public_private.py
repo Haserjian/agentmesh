@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -84,7 +85,8 @@ def _load_policy(repo_root: Path) -> dict[str, Any]:
         import json
 
         data = json.loads(policy_path.read_text())
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print(f"WARNING: failed to parse {policy_path}: {exc}", file=sys.stderr)
         return {}
     return data if isinstance(data, dict) else {}
 

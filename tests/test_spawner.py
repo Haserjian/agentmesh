@@ -264,6 +264,17 @@ def test_check_running(tmp_path: Path) -> None:
         assert result.exit_code is None
 
 
+def test_load_repo_policy_warns_on_malformed_json(tmp_path: Path, capsys) -> None:
+    repo = tmp_path / "repo"
+    (repo / ".agentmesh").mkdir(parents=True)
+    (repo / ".agentmesh" / "policy.json").write_text("{bad-json}\n")
+
+    from agentmesh import spawner
+
+    assert spawner._load_repo_policy(str(repo)) == {}
+    assert "failed to parse" in capsys.readouterr().err
+
+
 def test_check_exited(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     data_dir = _setup_orch(tmp_path)
