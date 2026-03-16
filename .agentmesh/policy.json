@@ -1,0 +1,7 @@
+{
+  "public_private": {
+    "content_scan_exempt_globs": [
+      "tests/fixtures/secrets/**"
+    ]
+  }
+}
