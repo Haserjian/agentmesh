@@ -114,6 +114,31 @@ def test_classify_honors_policy_overrides(tmp_path: Path, monkeypatch) -> None:
     assert payload["results"][0]["classification"] == PUBLIC
 
 
+def test_content_scan_exempt_skips_secret_detection(tmp_path: Path) -> None:
+    """A file with secret content under an exempt glob is NOT flagged private."""
+    repo = tmp_path / "repo"
+    (repo / ".agentmesh").mkdir(parents=True)
+    (repo / "tests" / "fixtures" / "secrets").mkdir(parents=True)
+    (repo / "tests" / "fixtures" / "secrets" / "token.py").write_text(
+        'API_TOKEN = "ghp_R8x2mN4vL6pQ9wK1jT3yF5bA7cE0hU2sG4nM"\n'
+    )
+    (repo / ".agentmesh" / "policy.json").write_text(
+        json.dumps(
+            {
+                "public_private": {
+                    "content_scan_exempt_globs": ["tests/fixtures/secrets/**"],
+                }
+            }
+        )
+    )
+
+    result = classify_path(
+        repo / "tests" / "fixtures" / "secrets" / "token.py", repo_root=repo,
+    )
+    assert result.classification == PUBLIC
+    assert all("content matches" not in r for r in result.reasons)
+
+
 def test_classify_docs_public_json_as_public(tmp_path: Path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     (repo / "docs").mkdir(parents=True)

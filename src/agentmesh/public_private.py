@@ -117,6 +117,7 @@ def classify_path(
     private_globs = _policy_list(cfg.get("private_path_globs")) or _DEFAULT_PRIVATE_GLOBS
     review_globs = _policy_list(cfg.get("review_path_globs")) or _DEFAULT_REVIEW_GLOBS
     private_patterns = _policy_list(cfg.get("private_content_patterns")) or _DEFAULT_PRIVATE_PATTERNS
+    content_scan_exempt = _policy_list(cfg.get("content_scan_exempt_globs"))
 
     rel = _rel_path(path, repo_root)
     reasons: list[str] = []
@@ -125,7 +126,7 @@ def classify_path(
         reasons.append("path matches private pattern")
 
     content_marker = None
-    if path.exists() and path.is_file():
+    if path.exists() and path.is_file() and not _has_match(rel, content_scan_exempt):
         try:
             text = path.read_text(errors="ignore")
         except OSError:
