@@ -1,14 +1,14 @@
 # AgentMesh
 
+> AgentMesh is the provenance engine in the [Assay](https://github.com/Haserjian/assay) ecosystem.
+
 [![PyPI](https://img.shields.io/pypi/v/agentmesh-core)](https://pypi.org/project/agentmesh-core/)
 [![Tests](https://img.shields.io/badge/tests-318%20passed-brightgreen)]()
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 Local-first multi-agent coordination and provenance for coding workflows.
 
-AgentMesh adds deterministic coordination (claims, waits, steals), commit-linked lineage (`AgentMesh-Episode` trailers + weave events), and portable handoff bundles (`.meshpack`) on top of normal git workflows.
-
-In the broader Assay/CCIO stack, AgentMesh is the **public provenance engine**: it records how agent work happened and feeds evidence systems such as Assay. It can be adopted standalone, but it is not the primary questionnaire/revenue wedge for that stack.
+AgentMesh adds deterministic coordination (claims, waits, steals), commit-linked lineage (`AgentMesh-Episode` trailers + weave events), and portable handoff bundles (`.meshpack`) on top of normal git workflows. It can be adopted standalone.
 
 ## Install
 
