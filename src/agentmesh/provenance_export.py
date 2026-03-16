@@ -11,7 +11,8 @@ This module does NOT import assay-toolkit. It produces plain dicts.
 """
 from __future__ import annotations
 
-import uuid
+import hashlib
+import json
 from typing import Any, Dict, List, Optional
 
 from .models import WeaveEvent
@@ -57,6 +58,16 @@ def weave_event_to_receipt(
     }
 
 
+def _witness_content_hash(witness: Dict[str, Any]) -> str:
+    """Derive a deterministic 24-char hex ID from stable witness content.
+
+    Same witness payload always produces the same receipt_id, ensuring
+    identical provenance exports yield byte-identical receipt objects.
+    """
+    canonical = json.dumps(witness, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+
 def witness_to_receipt(
     witness: Dict[str, Any],
     *,
@@ -73,7 +84,7 @@ def witness_to_receipt(
     """
     return {
         # Assay required fields
-        "receipt_id": f"amesh_witness_{uuid.uuid4().hex[:12]}",
+        "receipt_id": f"amesh_witness_{_witness_content_hash(witness)}",
         "type": "agentmesh_witness",
         "timestamp": witness.get("timestamp", ""),
         "schema_version": "1.0",

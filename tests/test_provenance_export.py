@@ -157,6 +157,29 @@ class TestWitnessReceipt:
         roundtripped = json.loads(serialized)
         assert roundtripped["type"] == "agentmesh_witness"
 
+    def test_receipt_id_is_deterministic(self):
+        """Same witness input must produce the same receipt_id every time."""
+        w = _make_witness()
+        r1 = witness_to_receipt(w)
+        r2 = witness_to_receipt(w)
+        assert r1["receipt_id"] == r2["receipt_id"]
+
+    def test_different_witness_produces_different_id(self):
+        """Changed witness content must produce a different receipt_id."""
+        w1 = _make_witness()
+        w2 = _make_witness(agent_id="different_agent_999")
+        r1 = witness_to_receipt(w1)
+        r2 = witness_to_receipt(w2)
+        assert r1["receipt_id"] != r2["receipt_id"]
+
+    def test_full_export_deterministic(self):
+        """Identical inputs produce byte-identical export outputs."""
+        events = [_make_weave_event()]
+        witnesses = [_make_witness()]
+        export1 = export_episode_provenance(events, witnesses)
+        export2 = export_episode_provenance(events, witnesses)
+        assert json.dumps(export1, sort_keys=True) == json.dumps(export2, sort_keys=True)
+
 
 # ---------------------------------------------------------------------------
 # Episode provenance export
