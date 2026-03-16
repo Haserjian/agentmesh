@@ -1,0 +1,44 @@
+name: Nightly QA Simulations
+
+on:
+  schedule:
+    # 03:15 UTC daily, offset from other nightly workflows
+    - cron: "15 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  full-suite:
+    name: Full test suite
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run full test suite
+        run: pytest tests/ -v
+
+  # Contention tests with extended timeout for heavier concurrency pressure
+  contention-heavy:
+    name: Contention tests (extended)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run contention tests with extended timeout
+        run: pytest tests/test_contention.py -v

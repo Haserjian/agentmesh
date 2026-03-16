@@ -1,0 +1,38 @@
+name: PR QA – Contention & Secret Detection
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  contention:
+    name: Contention tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run contention tests
+        run: pytest tests/test_contention.py -v
+
+  secret-detection:
+    name: Secret detection tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run secret detection tests
+        run: pytest tests/test_secret_detection.py -v
