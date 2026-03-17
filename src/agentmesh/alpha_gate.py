@@ -127,12 +127,17 @@ def build_alpha_gate_report(
     weave_ok, weave_err = weaver.verify_weave(data_dir=data_dir)
 
     witness_from_result = _witness_verified_from_result(ci_result)
-    if witness_from_result is None:
-        witness_verified = "VERIFIED" in ci_log_text if require_witness_verified else True
-        witness_source = "ci_log_text"
-    else:
+    if witness_from_result is not None:
         witness_verified = witness_from_result if require_witness_verified else True
         witness_source = "ci_result"
+    elif not require_witness_verified:
+        witness_verified = True
+        witness_source = "not_required"
+    else:
+        # No structured ci_result available. Refuse to infer witness status
+        # from raw log text — substring matching is too permissive.
+        witness_verified = False
+        witness_source = "no_structured_result"
     checks = {
         "merged_task_count": {"pass": merged_count >= 1, "actual": merged_count, "expected_min": 1},
         "witness_verified_ci": {

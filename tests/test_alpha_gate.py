@@ -53,10 +53,14 @@ def test_alpha_gate_report_passes_happy_path(tmp_path: Path) -> None:
         data_dir=data_dir,
     )
 
-    report = build_alpha_gate_report(data_dir=data_dir, ci_log_text="... VERIFIED ...")
+    report = build_alpha_gate_report(
+        data_dir=data_dir,
+        ci_result={"witness_verified": True},
+    )
     assert report["overall_pass"] is True
     assert report["checks"]["merged_task_count"]["pass"] is True
     assert report["checks"]["witness_verified_ci"]["pass"] is True
+    assert report["checks"]["witness_verified_ci"]["source"] == "ci_result"
     assert report["checks"]["weave_chain_intact"]["pass"] is True
     assert report["checks"]["full_transition_receipts"]["pass"] is True
     assert report["checks"]["watchdog_handled_event"]["pass"] is True
@@ -134,9 +138,27 @@ def test_alpha_gate_fails_when_weave_chain_is_corrupted(tmp_path: Path) -> None:
     finally:
         conn.close()
 
-    report = build_alpha_gate_report(data_dir=data_dir, ci_log_text="... VERIFIED ...")
+    report = build_alpha_gate_report(
+        data_dir=data_dir,
+        ci_result={"witness_verified": True},
+    )
     assert report["overall_pass"] is False
     assert report["checks"]["weave_chain_intact"]["pass"] is False
+
+
+def test_alpha_gate_rejects_text_only_witness_when_required(tmp_path: Path) -> None:
+    """Phase 1 hardening: raw ci_log_text alone must not satisfy witness requirement."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    db.init_db(data_dir)
+    report = build_alpha_gate_report(
+        data_dir=data_dir,
+        ci_log_text="... VERIFIED ...",
+        ci_result=None,
+        require_witness_verified=True,
+    )
+    assert report["checks"]["witness_verified_ci"]["pass"] is False
+    assert report["checks"]["witness_verified_ci"]["source"] == "no_structured_result"
 
 
 def test_sanitize_alpha_gate_report_redacts_id_lists() -> None:
