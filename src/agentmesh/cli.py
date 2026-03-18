@@ -2265,8 +2265,11 @@ def witness_verify_cmd(
             raise
         if json_out:
             import json as _json
-            print(_json.dumps({"schema_version": "1", "commit": commit,
-                               "status": "ERROR", "details": "witness extras not installed"}))
+            print(_json.dumps({"schema_version": "2", "commit": commit,
+                               "execution_status": "error", "verification_status": "error",
+                               "reason_codes": ["WITNESS_EXTRAS_NOT_INSTALLED"],
+                               "status": "ERROR", "details": "witness extras not installed",
+                               "verified": False}))
         else:
             console.print(
                 "Witness support not installed. Run: pip install 'agentmesh-core[witness]'",
@@ -2276,14 +2279,27 @@ def witness_verify_cmd(
     result = _witness.verify_commit(commit, cwd=os.getcwd(), data_dir=_get_data_dir())
     if json_out:
         import json as _json
+        # Map raw status to structured fields
+        _NO_WITNESS_STATUSES = {"NO_TRAILERS", "WITNESS_MISSING"}
+        _VERIFIED_STATUSES = {"VERIFIED"}
+        if result.status in _VERIFIED_STATUSES:
+            exec_status, verif_status = "ok", "verified"
+        elif result.status in _NO_WITNESS_STATUSES:
+            exec_status, verif_status = "ok", "no_witness"
+        else:
+            exec_status, verif_status = "ok", "not_verified"
+        reason_codes = [] if result.ok else [result.status]
         print(_json.dumps({
-            "schema_version": "1",
+            "schema_version": "2",
             "commit": commit,
+            "execution_status": exec_status,
+            "verification_status": verif_status,
+            "reason_codes": reason_codes,
             "status": result.status,
             "details": result.details,
             "verified": result.ok,
         }))
-        if not result.ok and result.status not in ("NO_TRAILERS", "WITNESS_MISSING"):
+        if not result.ok and result.status not in _NO_WITNESS_STATUSES:
             raise typer.Exit(1)
     else:
         if result.ok:
