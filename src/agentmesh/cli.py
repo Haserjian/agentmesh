@@ -2254,6 +2254,7 @@ app.add_typer(witness_app, name="witness")
 @witness_app.command(name="verify")
 def witness_verify_cmd(
     commit: str = typer.Argument("HEAD", help="Commit SHA to verify"),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
 ) -> None:
     """Verify a commit's witness envelope."""
     try:
@@ -2262,22 +2263,38 @@ def witness_verify_cmd(
         missing = getattr(exc, "name", "") or ""
         if not (missing.startswith("cryptography") or missing == "agentmesh.witness"):
             raise
-        console.print(
-            "Witness support not installed. Run: pip install 'agentmesh-core[witness]'",
-            style="red",
-            markup=False,
-        )
+        if json_out:
+            import json as _json
+            print(_json.dumps({"schema_version": "1", "commit": commit,
+                               "status": "ERROR", "details": "witness extras not installed"}))
+        else:
+            console.print(
+                "Witness support not installed. Run: pip install 'agentmesh-core[witness]'",
+                style="red", markup=False,
+            )
         raise typer.Exit(1)
     result = _witness.verify_commit(commit, cwd=os.getcwd(), data_dir=_get_data_dir())
-    if result.ok:
-        console.print(f"[green]VERIFIED[/green]  {result.details}")
-    elif result.status == "NO_TRAILERS":
-        console.print(f"[dim]NO_TRAILERS[/dim]  {result.details}")
-    elif result.status == "WITNESS_MISSING":
-        console.print(f"[yellow]WITNESS_MISSING[/yellow]  {result.details}")
+    if json_out:
+        import json as _json
+        print(_json.dumps({
+            "schema_version": "1",
+            "commit": commit,
+            "status": result.status,
+            "details": result.details,
+            "verified": result.ok,
+        }))
+        if not result.ok and result.status not in ("NO_TRAILERS", "WITNESS_MISSING"):
+            raise typer.Exit(1)
     else:
-        console.print(f"[red]{result.status}[/red]  {result.details}")
-        raise typer.Exit(1)
+        if result.ok:
+            console.print(f"[green]VERIFIED[/green]  {result.details}")
+        elif result.status == "NO_TRAILERS":
+            console.print(f"[dim]NO_TRAILERS[/dim]  {result.details}")
+        elif result.status == "WITNESS_MISSING":
+            console.print(f"[yellow]WITNESS_MISSING[/yellow]  {result.details}")
+        else:
+            console.print(f"[red]{result.status}[/red]  {result.details}")
+            raise typer.Exit(1)
 
 
 # -- Key commands --
