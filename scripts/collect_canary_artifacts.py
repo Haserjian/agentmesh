@@ -281,6 +281,11 @@ def _try_log_scrape(job_id: str) -> tuple[dict | None, dict]:
 
     Prefers TRUST_RESULT_V1 sentinel over prose parsing.
     Returns (data, attempt_record).
+
+    INVARIANT: Results from this function are ALWAYS tier 2 ("ci_job_logs"),
+    never tier 1. The sentinel payload is intentionally thinner than the
+    structured artifact — enough to recover a demoted decision, not enough
+    to compete with the artifact path.
     """
     attempt: dict = {"attempted": True, "status": "ok", "parser": "none"}
     if not job_id:
@@ -447,6 +452,10 @@ def collect_trust_evaluation(pr: int, head_sha: str = "") -> dict:
         return base
 
     # Tier 2: log scraping
+    # INVARIANT: log fallback is NEVER tier 1. Even if the sentinel is clean and
+    # complete, evidence_tier stays "ci_job_logs". Only a structured CI artifact
+    # with validated provenance earns "structured_ci_artifact". This prevents
+    # accidental tier inflation when the artifact upload is broken but logs are rich.
     log_data, log_attempt = _try_log_scrape(job_id)
     base["log_fallback"] = log_attempt
 
