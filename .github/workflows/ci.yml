@@ -291,6 +291,13 @@ jobs:
           }
           decision = DECISION_MAP.get(raw_decision, 'INCONCLUSIVE')
 
+          import re
+          ref = os.environ.get('GITHUB_REF', '')
+          m = re.match(r'refs/pull/(\d+)/', ref)
+          pr_number = int(m.group(1)) if m else 0
+
+          signer_id = (trust.get('authorization') or {}).get('signer_id', '')
+
           result = {
               'schema_version': '1',
               'trust_decision': decision,
@@ -298,12 +305,13 @@ jobs:
               'reason': acceptance.get('reason', ''),
               'fingerprint_verified': bool(os.environ.get('VERIFIED_FINGERPRINT')),
               'fingerprint_prefix': os.environ.get('VERIFIED_FINGERPRINT', '')[:16],
-              'signer_id': (trust.get('authorization') or {}).get('signer_id', ''),
+              'signer_id': signer_id,
               'authorization_status': (trust.get('authorization') or {}).get('status', ''),
               'source': 'ci_structured_artifact',
               'workflow_run_id': os.environ.get('GITHUB_RUN_ID', ''),
               'job_id': os.environ.get('GITHUB_JOB', ''),
               'commit_sha': os.environ.get('GITHUB_SHA', ''),
+              'pr_number': pr_number,
               'verified_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
           }
 
@@ -311,8 +319,14 @@ jobs:
           with open(out_path, 'w') as f:
               json.dump(result, f, indent=2)
               f.write('\n')
+
+          # Human-readable output
           print(f"Trust decision: {decision} (raw: {raw_decision})")
           print(f"Written to {out_path}")
+
+          # Machine-parseable sentinel for log scraping fallback (versioned)
+          sentinel = json.dumps({'v': 1, 'd': decision, 'fp': result['fingerprint_verified'], 'sid': signer_id})
+          print(f'TRUST_RESULT_V1 {sentinel}')
 
           if decision == 'REJECT':
               print('::error::Trust gate rejected the proof pack')

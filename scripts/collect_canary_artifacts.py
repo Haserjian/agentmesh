@@ -199,51 +199,157 @@ def _extract_run_id_from_link(link: str) -> str:
     return parts[0] if parts else ""
 
 
-def _try_structured_artifact(run_id: str) -> dict | None:
-    """Tier 1: Download the structured trust_result.json from CI artifacts."""
+def _try_structured_artifact(
+    run_id: str,
+    *,
+    expected_sha: str = "",
+    expected_pr: int = 0,
+) -> tuple[dict | None, dict]:
+    """Tier 1: Download trust_result.json from CI artifacts.
+
+    Returns (data, attempt_record). data is None on any failure.
+    attempt_record always describes what happened for audit.
+    """
+    attempt: dict = {"attempted": True, "status": "ok"}
     if not run_id:
-        return None
+        attempt["status"] = "no_run_id"
+        return None, attempt
+
     import tempfile
     with tempfile.TemporaryDirectory() as tmpdir:
         proc = _run(["gh", "run", "download", run_id,
                       "--name", "assay-verify-report",
                       "--dir", tmpdir])
         if proc.returncode != 0:
-            return None
+            attempt["status"] = "artifact_missing"
+            return None, attempt
         trust_path = Path(tmpdir) / "trust_result.json"
         if not trust_path.exists():
-            return None
+            attempt["status"] = "artifact_missing"
+            return None, attempt
         try:
             data = json.loads(trust_path.read_text())
         except (json.JSONDecodeError, ValueError):
-            return None
-        # Validate required fields
+            attempt["status"] = "invalid_schema"
+            return None, attempt
+
         if "trust_decision" not in data or "schema_version" not in data:
-            return None
+            attempt["status"] = "invalid_schema"
+            return None, attempt
+
+        # Provenance validation
+        provenance: dict = {
+            "expected_sha": expected_sha,
+            "observed_sha": data.get("commit_sha", ""),
+            "expected_run_id": run_id,
+            "observed_run_id": data.get("workflow_run_id", ""),
+            "match": None,
+        }
+        if expected_pr:
+            provenance["expected_pr"] = expected_pr
+            provenance["observed_pr"] = data.get("pr_number", 0)
+
+        # Check provenance: only compare fields where both sides have values
+        mismatches = []
+        for key_pair in [("expected_sha", "observed_sha"), ("expected_run_id", "observed_run_id")]:
+            exp = provenance[key_pair[0]]
+            obs = provenance[key_pair[1]]
+            if exp and obs and str(exp) != str(obs):
+                mismatches.append(key_pair[0].replace("expected_", ""))
+
+        if mismatches:
+            provenance["match"] = False
+            provenance["mismatched_fields"] = mismatches
+            attempt["status"] = "provenance_mismatch"
+            attempt["provenance"] = provenance
+            return None, attempt
+
+        # If both sides have values and they match, provenance is confirmed
+        has_any_check = any(
+            provenance.get(f"expected_{f}") and provenance.get(f"observed_{f}")
+            for f in ("sha", "run_id")
+        )
+        provenance["match"] = True if has_any_check else None
+        attempt["provenance"] = provenance
+
         data["source"] = "ci_structured_artifact"
-        return data
+        return data, attempt
 
 
-def _try_log_scrape(job_id: str) -> dict | None:
-    """Tier 2: Extract trust decision from CI job logs (fallback)."""
+def _try_log_scrape(job_id: str) -> tuple[dict | None, dict]:
+    """Tier 2: Extract trust decision from CI job logs (fallback).
+
+    Prefers TRUST_RESULT_V1 sentinel over prose parsing.
+    Returns (data, attempt_record).
+    """
+    attempt: dict = {"attempted": True, "status": "ok", "parser": "none"}
     if not job_id:
-        return None
+        attempt["status"] = "not_attempted"
+        attempt["attempted"] = False
+        return None, attempt
+
     log_proc = _run(["gh", "api", f"repos/:owner/:repo/actions/jobs/{job_id}/logs"])
     if log_proc.returncode != 0:
-        return None
+        attempt["status"] = "logs_unavailable"
+        return None, attempt
 
+    logs = log_proc.stdout
+
+    # Tier 2a: try sentinel line first (machine-parseable, versioned)
+    sentinel_result = _parse_sentinel(logs)
+    if sentinel_result is not None:
+        attempt["parser"] = "sentinel_v1"
+        return sentinel_result, attempt
+
+    # Tier 2b: fall back to prose parsing
+    prose_result = _parse_prose(logs)
+    if prose_result is not None:
+        attempt["parser"] = "prose_v1"
+        return prose_result, attempt
+
+    attempt["status"] = "parse_error"
+    return None, attempt
+
+
+def _parse_sentinel(logs: str) -> dict | None:
+    """Parse TRUST_RESULT_V1 sentinel line from CI logs."""
+    ENUM_MAP = {"ACCEPT": "ACCEPT", "REJECT": "REJECT"}
+    for line in logs.splitlines():
+        if "TRUST_RESULT_V1 " not in line:
+            continue
+        idx = line.index("TRUST_RESULT_V1 ") + len("TRUST_RESULT_V1 ")
+        try:
+            payload = json.loads(line[idx:])
+        except json.JSONDecodeError:
+            continue
+        if payload.get("v") != 1:
+            continue
+        raw = payload.get("d", "")
+        decision = ENUM_MAP.get(raw, "INCONCLUSIVE")
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "trust_decision": decision,
+            "fingerprint_verified": bool(payload.get("fp")),
+            "verification": {
+                "signer_id": payload.get("sid", ""),
+            },
+        }
+    return None
+
+
+def _parse_prose(logs: str) -> dict | None:
+    """Parse human-readable trust lines from CI logs (legacy fallback)."""
+    ENUM_MAP = {"accept": "ACCEPT", "reject": "REJECT"}
     trust_decision = None
     fingerprint_verified = False
     ci_evidence: dict = {}
 
-    for line in log_proc.stdout.splitlines():
+    for line in logs.splitlines():
         if "Trust decision:" in line:
             parts = line.split("Trust decision:")
             if len(parts) == 2:
                 raw = parts[1].strip()
-                # Map to canonical enum
-                enum_map = {"accept": "ACCEPT", "reject": "REJECT"}
-                trust_decision = enum_map.get(raw, "INCONCLUSIVE")
+                trust_decision = ENUM_MAP.get(raw, "INCONCLUSIVE")
         if "Fingerprint verified:" in line:
             fingerprint_verified = True
             parts = line.split("Fingerprint verified:")
@@ -260,84 +366,106 @@ def _try_log_scrape(job_id: str) -> dict | None:
     return {
         "schema_version": SCHEMA_VERSION,
         "trust_decision": trust_decision,
-        "source": "ci_job_logs",
         "fingerprint_verified": fingerprint_verified,
         "ci_evidence": ci_evidence,
     }
 
 
-def collect_trust_evaluation(pr: int) -> dict:
-    """Artifact 7: trust_evaluation.json
+def collect_trust_evaluation(pr: int, head_sha: str = "") -> dict:
+    """Artifact 7: trust_evaluation.json (schema v2)
 
     Three-tier precedence:
       1. CI structured artifact (trust_result.json) — declared evidence
-      2. CI job log scraping — forensic inference (fallback)
+      2. CI job log scraping (sentinel > prose) — forensic inference
       3. INCONCLUSIVE — never overclaims
 
-    Trust decision enum: ACCEPT | REJECT | INCONCLUSIVE
+    Output axes (independent):
+      - trust_decision: ACCEPT | REJECT | INCONCLUSIVE
+      - evidence_tier: structured_ci_artifact | ci_job_logs | none
+      - collection_status: ok | unavailable | parse_error | api_error
+      - structured_artifact: per-tier attempt subrecord
+      - log_fallback: per-tier attempt subrecord
+      - provenance: expected vs observed comparison
     """
+    base: dict = {
+        "schema_version": "2",
+        "trust_decision": "INCONCLUSIVE",
+        "evidence_tier": "none",
+        "collection_status": "unavailable",
+        "structured_artifact": {"attempted": False, "status": "not_attempted"},
+        "log_fallback": {"attempted": False, "status": "not_attempted", "parser": "none"},
+        "provenance": {},
+        "collected_at": _now(),
+    }
+
     # Find the assay-verify job for this PR
     proc = _run(["gh", "pr", "checks", str(pr), "--json", "name,state,bucket,link"])
     try:
         checks = json.loads(proc.stdout)
     except (json.JSONDecodeError, ValueError):
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "trust_decision": "INCONCLUSIVE",
-            "reason": "could not fetch PR checks",
-            "collected_at": _now(),
-        }
+        base["collection_status"] = "api_error"
+        base["reason"] = "could not fetch PR checks"
+        return base
 
     verify_check = next((c for c in checks if c.get("name") == "assay-verify"), None)
     if not verify_check:
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "trust_decision": "INCONCLUSIVE",
-            "reason": "assay-verify check not found in PR checks",
-            "collected_at": _now(),
-        }
+        base["reason"] = "assay-verify check not found in PR checks"
+        return base
 
     link = verify_check.get("link", "")
     job_id = link.rsplit("/", 1)[-1] if "/job/" in link else ""
     run_id = _extract_run_id_from_link(link)
     bucket = verify_check.get("bucket", "")
+    base["ci_job_id"] = job_id
+    base["ci_check_link"] = link
+    base["ci_bucket"] = bucket
 
-    # If the check itself didn't pass, distinguish REJECT from INCONCLUSIVE
     if bucket != "pass":
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "trust_decision": "INCONCLUSIVE",
-            "reason": f"assay-verify check did not pass (state={verify_check.get('state')}, "
-                      f"bucket={bucket}). Could be policy rejection or infra failure.",
-            "ci_check_link": link,
-            "collected_at": _now(),
-        }
+        base["reason"] = (
+            f"assay-verify check did not pass (state={verify_check.get('state')}, "
+            f"bucket={bucket}). Could be policy rejection or infra failure."
+        )
+        return base
 
     # Tier 1: structured CI artifact
-    result = _try_structured_artifact(run_id)
-    if result:
-        result["ci_job_id"] = job_id
-        result["ci_check_link"] = link
-        result["collected_at"] = _now()
-        return result
+    artifact_data, artifact_attempt = _try_structured_artifact(
+        run_id, expected_sha=head_sha, expected_pr=pr,
+    )
+    base["structured_artifact"] = artifact_attempt
+    if artifact_attempt.get("provenance"):
+        base["provenance"] = artifact_attempt["provenance"]
+
+    if artifact_data is not None:
+        base["trust_decision"] = artifact_data.get("trust_decision", "INCONCLUSIVE")
+        base["evidence_tier"] = "structured_ci_artifact"
+        base["collection_status"] = "ok"
+        # Carry through verification fields from CI artifact
+        for key in ("fingerprint_verified", "fingerprint_prefix", "signer_id",
+                     "authorization_status", "reason", "raw_decision"):
+            if key in artifact_data:
+                base.setdefault("verification", {})[key] = artifact_data[key]
+        return base
 
     # Tier 2: log scraping
-    result = _try_log_scrape(job_id)
-    if result:
-        result["ci_job_id"] = job_id
-        result["ci_check_link"] = link
-        result["collected_at"] = _now()
-        return result
+    log_data, log_attempt = _try_log_scrape(job_id)
+    base["log_fallback"] = log_attempt
+
+    if log_data is not None:
+        base["trust_decision"] = log_data.get("trust_decision", "INCONCLUSIVE")
+        base["evidence_tier"] = "ci_job_logs"
+        base["collection_status"] = "ok"
+        if log_data.get("fingerprint_verified"):
+            base.setdefault("verification", {})["fingerprint_verified"] = True
+        if log_data.get("ci_evidence"):
+            base.setdefault("verification", {}).update(log_data["ci_evidence"])
+        if log_data.get("verification"):
+            base.setdefault("verification", {}).update(log_data["verification"])
+        return base
 
     # Tier 3: INCONCLUSIVE
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "trust_decision": "INCONCLUSIVE",
-        "reason": "could not extract trust decision from CI artifact or logs",
-        "ci_job_id": job_id,
-        "ci_check_link": link,
-        "collected_at": _now(),
-    }
+    base["collection_status"] = "unavailable"
+    base["reason"] = "could not extract trust decision from CI artifact or logs"
+    return base
 
 
 def collect_merge_decision(pr: int, pr_info: dict) -> dict:
@@ -411,7 +539,7 @@ def main():
         write_artifact(out_dir, "weave_chain.json", collect_weave())
         write_artifact(out_dir, "ci_run.json", collect_ci_run(args.pr))
         write_artifact(out_dir, "assay_gate.json", collect_assay_gate())
-        write_artifact(out_dir, "trust_evaluation.json", collect_trust_evaluation(args.pr))
+        write_artifact(out_dir, "trust_evaluation.json", collect_trust_evaluation(args.pr, head_sha=head_sha))
         print()
 
     if args.phase in ("post", "full"):
