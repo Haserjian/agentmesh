@@ -1,0 +1,8 @@
+{
+  "bridge_status": "CI_PASS",
+  "ci_job_id": "67811394479",
+  "ci_conclusion": "success",
+  "bridge_available_locally": false,
+  "gate_log_excerpt": "assay-gate\tSet up job\t\ufeff2026-03-19T20:12:46.4378036Z Current runner version: '2.332.0'\nassay-gate\tSet up job\t2026-03-19T20:12:46.4404818Z ##[group]Runner Image Provisioner\nassay-gate\tSet up job\t2026-03-19T20:12:46.4405678Z Hosted Compute Agent\nassay-gate\tSet up job\t2026-03-19T20:12:46.4406241Z Version: 20260213.493\nassay-gate\tSet up job\t2026-03-19T20:12:46.4406938Z Commit: 5c115507f6dd24b8de37d8bbe0bb4509d0cc0fa3\nassay-gate\tSet up job\t2026-03-19T20:12:46.4407697Z Build Date: 2026-02-13T00:28:41Z\n",
+  "collected_at": "2026-03-19T20:15:33.436886Z"
+}

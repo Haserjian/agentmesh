@@ -1,0 +1,9 @@
+{
+  "signer_id": "mesh_38fcaa1da83d4d9a",
+  "trust_decision": "SKIP",
+  "target": "ci_gate",
+  "reason": "ci-org signer not yet bootstrapped in agentmesh trust policy. Local witness verified (mesh_38fcaa1da83d4d9a). assay verify-pack with --enforce-trust-gate not activated in CI. Explicit skip, not silent omission.",
+  "degraded": true,
+  "acceptable_per_spec": true,
+  "collected_at": "2026-03-19T20:15:45.201523Z"
+}

@@ -1,0 +1,20 @@
+{
+  "pr_url": "https://github.com/Haserjian/agentmesh/pull/37",
+  "pr_number": 37,
+  "merged_sha": "4ef0b3e5d31d581655bdb54ed266004af1d12c85",
+  "merged_at": "2026-03-19T20:15:52Z",
+  "all_checks_passed": false,
+  "required_checks_passed": true,
+  "required_checks": [
+    "lineage",
+    "assay-gate",
+    "assay-verify"
+  ],
+  "failed_checks": [
+    "dco"
+  ],
+  "failed_check_required": false,
+  "missing_artifacts": [],
+  "notes": "DCO failed (missing Signed-off-by trailer) but is not a required check. All 3 required checks (lineage, assay-gate, assay-verify) passed. Merge allowed.",
+  "collected_at": "2026-03-19T20:16:06.913156Z"
+}

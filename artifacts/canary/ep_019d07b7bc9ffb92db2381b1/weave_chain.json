@@ -1,0 +1,9 @@
+{
+  "chain_length": 37,
+  "gaps": 0,
+  "integrity": "pass",
+  "verify_output": "Weave chain valid",
+  "last_event_id": "weave_9447fe9bfaea",
+  "last_sequence_id": 37,
+  "collected_at": "2026-03-19T20:15:14.371039Z"
+}
