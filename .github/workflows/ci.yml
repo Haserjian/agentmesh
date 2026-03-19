@@ -272,28 +272,59 @@ jobs:
             --enforce-trust-gate \
             --json | tee ".assay-verify/verify.json"
 
-          # Verify trust decision
-          python3 -c "
-          import json, sys
-          report = json.load(open('.assay-verify/verify.json'))
-          trust = report.get('trust') or {}
-          decision = (trust.get('acceptance') or {}).get('decision', 'not_evaluated')
-          print(f'Trust decision: {decision}')
-          if decision == 'reject':
+          # Extract trust decision into stable-schema artifact
+          python3 << 'TRUSTPY'
+          import json, os, sys
+          from datetime import datetime, timezone
+
+          verify = json.load(open('.assay-verify/verify.json'))
+          trust = verify.get('trust') or {}
+          acceptance = trust.get('acceptance') or {}
+          raw_decision = acceptance.get('decision', 'not_evaluated')
+
+          # Map to canonical enum: ACCEPT | REJECT | INCONCLUSIVE
+          DECISION_MAP = {
+              'accept': 'ACCEPT',
+              'reject': 'REJECT',
+              'warn': 'INCONCLUSIVE',
+              'not_evaluated': 'INCONCLUSIVE',
+          }
+          decision = DECISION_MAP.get(raw_decision, 'INCONCLUSIVE')
+
+          result = {
+              'schema_version': '1',
+              'trust_decision': decision,
+              'raw_decision': raw_decision,
+              'reason': acceptance.get('reason', ''),
+              'fingerprint_verified': bool(os.environ.get('VERIFIED_FINGERPRINT')),
+              'fingerprint_prefix': os.environ.get('VERIFIED_FINGERPRINT', '')[:16],
+              'signer_id': (trust.get('authorization') or {}).get('signer_id', ''),
+              'authorization_status': (trust.get('authorization') or {}).get('status', ''),
+              'source': 'ci_structured_artifact',
+              'workflow_run_id': os.environ.get('GITHUB_RUN_ID', ''),
+              'job_id': os.environ.get('GITHUB_JOB', ''),
+              'commit_sha': os.environ.get('GITHUB_SHA', ''),
+              'verified_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+          }
+
+          out_path = '.assay-verify/trust_result.json'
+          with open(out_path, 'w') as f:
+              json.dump(result, f, indent=2)
+              f.write('\n')
+          print(f"Trust decision: {decision} (raw: {raw_decision})")
+          print(f"Written to {out_path}")
+
+          if decision == 'REJECT':
               print('::error::Trust gate rejected the proof pack')
               sys.exit(1)
-          "
-
-      - name: Verify artifacts exist
-        if: always()
-        run: ls -la .assay-verify/ 2>/dev/null || echo "WARNING: .assay-verify/ not found"
+          TRUSTPY
 
       - name: Upload verify artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: assay-verify-report
-          path: .assay-verify
+          path: .assay-verify/
           if-no-files-found: warn
 
   weave-integrity:

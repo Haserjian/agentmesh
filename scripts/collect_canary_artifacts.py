@@ -190,13 +190,93 @@ def collect_assay_gate() -> dict:
     return result
 
 
+def _extract_run_id_from_link(link: str) -> str:
+    """Extract workflow run ID from a GitHub Actions job link."""
+    # link format: https://github.com/.../actions/runs/<run_id>/job/<job_id>
+    if "/actions/runs/" not in link:
+        return ""
+    parts = link.split("/actions/runs/")[1].split("/")
+    return parts[0] if parts else ""
+
+
+def _try_structured_artifact(run_id: str) -> dict | None:
+    """Tier 1: Download the structured trust_result.json from CI artifacts."""
+    if not run_id:
+        return None
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        proc = _run(["gh", "run", "download", run_id,
+                      "--name", "assay-verify-report",
+                      "--dir", tmpdir])
+        if proc.returncode != 0:
+            return None
+        trust_path = Path(tmpdir) / "trust_result.json"
+        if not trust_path.exists():
+            return None
+        try:
+            data = json.loads(trust_path.read_text())
+        except (json.JSONDecodeError, ValueError):
+            return None
+        # Validate required fields
+        if "trust_decision" not in data or "schema_version" not in data:
+            return None
+        data["source"] = "ci_structured_artifact"
+        return data
+
+
+def _try_log_scrape(job_id: str) -> dict | None:
+    """Tier 2: Extract trust decision from CI job logs (fallback)."""
+    if not job_id:
+        return None
+    log_proc = _run(["gh", "api", f"repos/:owner/:repo/actions/jobs/{job_id}/logs"])
+    if log_proc.returncode != 0:
+        return None
+
+    trust_decision = None
+    fingerprint_verified = False
+    ci_evidence: dict = {}
+
+    for line in log_proc.stdout.splitlines():
+        if "Trust decision:" in line:
+            parts = line.split("Trust decision:")
+            if len(parts) == 2:
+                raw = parts[1].strip()
+                # Map to canonical enum
+                enum_map = {"accept": "ACCEPT", "reject": "REJECT"}
+                trust_decision = enum_map.get(raw, "INCONCLUSIVE")
+        if "Fingerprint verified:" in line:
+            fingerprint_verified = True
+            parts = line.split("Fingerprint verified:")
+            if len(parts) == 2:
+                ci_evidence["fingerprint_prefix"] = parts[1].strip()
+        if "signers.yaml hash=" in line:
+            parts = line.split("signers.yaml hash=")
+            if len(parts) == 2:
+                ci_evidence["signers_yaml_hash"] = parts[1].strip()
+
+    if trust_decision is None:
+        return None
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "trust_decision": trust_decision,
+        "source": "ci_job_logs",
+        "fingerprint_verified": fingerprint_verified,
+        "ci_evidence": ci_evidence,
+    }
+
+
 def collect_trust_evaluation(pr: int) -> dict:
     """Artifact 7: trust_evaluation.json
 
-    Extracts the actual trust decision from the CI assay-verify job logs.
-    Falls back to INCONCLUSIVE (never overclaims).
+    Three-tier precedence:
+      1. CI structured artifact (trust_result.json) — declared evidence
+      2. CI job log scraping — forensic inference (fallback)
+      3. INCONCLUSIVE — never overclaims
+
+    Trust decision enum: ACCEPT | REJECT | INCONCLUSIVE
     """
-    # Find the assay-verify job for this PR's latest run
+    # Find the assay-verify job for this PR
     proc = _run(["gh", "pr", "checks", str(pr), "--json", "name,state,bucket,link"])
     try:
         checks = json.loads(proc.stdout)
@@ -217,53 +297,45 @@ def collect_trust_evaluation(pr: int) -> dict:
             "collected_at": _now(),
         }
 
-    if verify_check.get("bucket") != "pass":
+    link = verify_check.get("link", "")
+    job_id = link.rsplit("/", 1)[-1] if "/job/" in link else ""
+    run_id = _extract_run_id_from_link(link)
+    bucket = verify_check.get("bucket", "")
+
+    # If the check itself didn't pass, distinguish REJECT from INCONCLUSIVE
+    if bucket != "pass":
         return {
             "schema_version": SCHEMA_VERSION,
-            "trust_decision": "FAIL",
-            "reason": f"assay-verify check did not pass (state={verify_check.get('state')})",
-            "ci_check_link": verify_check.get("link", ""),
+            "trust_decision": "INCONCLUSIVE",
+            "reason": f"assay-verify check did not pass (state={verify_check.get('state')}, "
+                      f"bucket={bucket}). Could be policy rejection or infra failure.",
+            "ci_check_link": link,
             "collected_at": _now(),
         }
 
-    # Extract job ID from the link and fetch logs for the actual trust decision
-    link = verify_check.get("link", "")
-    # link format: https://github.com/.../actions/runs/<run_id>/job/<job_id>
-    job_id = link.rsplit("/", 1)[-1] if "/job/" in link else ""
+    # Tier 1: structured CI artifact
+    result = _try_structured_artifact(run_id)
+    if result:
+        result["ci_job_id"] = job_id
+        result["ci_check_link"] = link
+        result["collected_at"] = _now()
+        return result
 
-    trust_decision = "INCONCLUSIVE"
-    fingerprint_verified = False
-    ci_evidence = {}
+    # Tier 2: log scraping
+    result = _try_log_scrape(job_id)
+    if result:
+        result["ci_job_id"] = job_id
+        result["ci_check_link"] = link
+        result["collected_at"] = _now()
+        return result
 
-    if job_id:
-        log_proc = _run(["gh", "api", f"repos/:owner/:repo/actions/jobs/{job_id}/logs"])
-        if log_proc.returncode == 0:
-            logs = log_proc.stdout
-            # Extract trust decision
-            for line in logs.splitlines():
-                if "Trust decision:" in line:
-                    # Format: "2026-... Trust decision: accept"
-                    parts = line.split("Trust decision:")
-                    if len(parts) == 2:
-                        trust_decision = parts[1].strip()
-                if "Fingerprint verified:" in line:
-                    fingerprint_verified = True
-                    parts = line.split("Fingerprint verified:")
-                    if len(parts) == 2:
-                        ci_evidence["fingerprint_prefix"] = parts[1].strip()
-                if "signers.yaml hash=" in line:
-                    parts = line.split("signers.yaml hash=")
-                    if len(parts) == 2:
-                        ci_evidence["signers_yaml_hash"] = parts[1].strip()
-
+    # Tier 3: INCONCLUSIVE
     return {
         "schema_version": SCHEMA_VERSION,
-        "trust_decision": trust_decision,
-        "source": "ci_job_logs",
+        "trust_decision": "INCONCLUSIVE",
+        "reason": "could not extract trust decision from CI artifact or logs",
         "ci_job_id": job_id,
         "ci_check_link": link,
-        "fingerprint_verified": fingerprint_verified,
-        "ci_evidence": ci_evidence,
         "collected_at": _now(),
     }
 
