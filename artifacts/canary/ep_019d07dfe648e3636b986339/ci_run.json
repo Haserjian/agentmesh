@@ -1,0 +1,80 @@
+{
+  "schema_version": "1",
+  "pr_number": 38,
+  "required_checks": {
+    "assay-gate": "pass",
+    "lineage": "pass",
+    "assay-verify": "pass"
+  },
+  "all_required_passed": true,
+  "failed_checks": [],
+  "total_checks": 13,
+  "checks": [
+    {
+      "name": "package-smoke",
+      "state": "SUCCESS",
+      "bucket": "pass"
+    },
+    {
+      "name": "assay-gate",
+      "state": "SUCCESS",
+      "bucket": "pass"
+    },
+    {
+      "name": "Contention tests",
+      "state": "SUCCESS",
+      "bucket": "pass"
+    },
+    {
+      "name": "public-private-guard",
+      "state": "SUCCESS",
+      "bucket": "pass"
+    },
+    {
+      "name": "release-check-preview",
+      "state": "SUCCESS",
+      "bucket": "pass"
+    },
+    {
+      "name": "Secret detection tests",
+      "state": "SUCCESS",
+      "bucket": "pass"
+    },
+    {
+      "name": "lineage",
+      "state": "SUCCESS",
+      "bucket": "pass"
+    },
+    {
+      "name": "assay-verify",
+      "state": "SUCCESS",
+      "bucket": "pass"
+    },
+    {
+      "name": "weave-integrity",
+      "state": "SUCCESS",
+      "bucket": "pass"
+    },
+    {
+      "name": "test (3.10)",
+      "state": "SUCCESS",
+      "bucket": "pass"
+    },
+    {
+      "name": "test (3.11)",
+      "state": "SUCCESS",
+      "bucket": "pass"
+    },
+    {
+      "name": "test (3.12)",
+      "state": "SUCCESS",
+      "bucket": "pass"
+    },
+    {
+      "name": "dco",
+      "state": "SUCCESS",
+      "bucket": "pass"
+    }
+  ],
+  "collected_at": "2026-03-19T20:56:17.659745Z"
+}

@@ -1,0 +1,9 @@
+{
+  "schema_version": "1",
+  "episode_id": "ep_019d07dfe648e3636b986339",
+  "pr_number": 38,
+  "pr_url": "https://github.com/Haserjian/agentmesh/pull/38",
+  "branch": "canary/proof-carrying-pr-02",
+  "head_sha": "05e61ccf4a7ae2513b8a5ebd35d662083d046796",
+  "collected_at": "2026-03-19T20:56:15.974586Z"
+}

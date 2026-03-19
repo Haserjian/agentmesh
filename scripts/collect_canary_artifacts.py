@@ -123,29 +123,24 @@ def collect_weave() -> dict:
 
 def collect_ci_run(pr: int) -> dict:
     """Artifact 5: ci_run.json"""
-    proc = _run(["gh", "pr", "checks", str(pr), "--json",
-                 "name,state,conclusion,detailsUrl,bucket"])
-    if proc.returncode != 0:
-        # gh pr checks --json may not be available; fall back to API
-        proc = _run(["gh", "api", f"repos/:owner/:repo/pulls/{pr}/checks"])
-
+    proc = _run(["gh", "pr", "checks", str(pr), "--json", "name,state,bucket"])
     try:
         checks = json.loads(proc.stdout)
     except json.JSONDecodeError:
         checks = []
 
-    # Normalize: gh pr checks --json returns list of dicts
     required_results = {}
     all_checks = []
     failed = []
 
     for check in checks:
         name = check.get("name", "")
-        conclusion = check.get("conclusion", check.get("state", ""))
-        all_checks.append({"name": name, "conclusion": conclusion})
+        state = check.get("state", "")
+        bucket = check.get("bucket", "")
+        all_checks.append({"name": name, "state": state, "bucket": bucket})
         if name in REQUIRED_CHECKS:
-            required_results[name] = conclusion
-        if conclusion not in ("success", "pass", "skipped", ""):
+            required_results[name] = bucket
+        if bucket not in ("pass", ""):
             failed.append(name)
 
     return {
@@ -153,7 +148,7 @@ def collect_ci_run(pr: int) -> dict:
         "pr_number": pr,
         "required_checks": required_results,
         "all_required_passed": all(
-            v in ("success", "pass") for v in required_results.values()
+            v == "pass" for v in required_results.values()
         ),
         "failed_checks": failed,
         "total_checks": len(all_checks),

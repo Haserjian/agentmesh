@@ -1,0 +1,50 @@
+{
+  "schema_version": "1",
+  "bridge_status": "BRIDGE_EMIT_OK",
+  "gate_report": {
+    "command": "assay gate",
+    "result": "PASS",
+    "current_score": 62.5,
+    "current_grade": "D",
+    "baseline_score": null,
+    "min_score": 0.0,
+    "regression_detected": false,
+    "reasons": [],
+    "timestamp": "2026-03-19T20:56:18.214807+00:00",
+    "status": "ok",
+    "require_lock": false,
+    "lock_status": "not_required"
+  },
+  "reason": "",
+  "ccoi_envelope": {
+    "ccoi_version": "0.1",
+    "source_organ": "agentmesh",
+    "target_organ": "assay-toolkit",
+    "authority_class": "AUDITING",
+    "primitive": "QUERY",
+    "correlation_id": "canary",
+    "ts_sent": "2026-03-19T20:56:18.245900Z",
+    "payload": {
+      "bridge": "assay_bridge",
+      "action": "gate_check",
+      "terminal_state": "MERGED",
+      "bridge_status": "BRIDGE_EMIT_OK",
+      "gate_report": {
+        "command": "assay gate",
+        "result": "PASS",
+        "current_score": 62.5,
+        "current_grade": "D",
+        "baseline_score": null,
+        "min_score": 0.0,
+        "regression_detected": false,
+        "reasons": [],
+        "timestamp": "2026-03-19T20:56:18.214807+00:00",
+        "status": "ok",
+        "require_lock": false,
+        "lock_status": "not_required"
+      },
+      "agent_id": "claude_592a9332"
+    }
+  },
+  "collected_at": "2026-03-19T20:56:18.283765Z"
+}

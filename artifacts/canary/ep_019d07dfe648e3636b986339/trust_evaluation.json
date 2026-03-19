@@ -1,0 +1,7 @@
+{
+  "schema_version": "1",
+  "trust_decision": "DEFERRED_TO_CI",
+  "reason": "trust gate enforcement runs in CI with bootstrapped signer overlay; local evaluation deferred. Check ci_run.json assay-verify result.",
+  "ci_trust_gate_active": true,
+  "collected_at": "2026-03-19T20:56:18.557297Z"
+}

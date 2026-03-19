@@ -1,0 +1,16 @@
+{
+  "schema_version": "1",
+  "episode_id": "ep_019d07dfe648e3636b986339",
+  "files": {
+    "assay_gate.json": "d5118c1e1efd8925459513557002733ca2c18f87b302d52071e703bd9a13b489",
+    "ci_run.json": "656eacbbb46ebd95464412f84051d5bf55f77e2219f4e601fedd18a4e5f5c3bf",
+    "episode.json": "fe396f049a6c7eea84726f586c6fc8ddbd94f96db2e756c0d064fc827ef4150d",
+    "lineage.json": "7cf6b72f5e322e281eb8a8e07420ea4a38ec5d24774146b00f1bc0ad74c62a2c",
+    "merge_decision.json": "7ed52b8156a4aa9dc732373d4dd38f8ff0af3e3c41ff1937bfd394584122a42a",
+    "trust_evaluation.json": "0d8232fb81d0b185aa7422d21ee64a2d8b3881bf26a2b927049b93eb0949c910",
+    "weave_chain.json": "1a30a56f14b661000eba05978d9a9c6ce9e9b82e59ee9522476983ce92282013",
+    "witness.json": "7252621059e044021868e9fefc390aab2612dddb4ac82724bb3347a09366ba0a"
+  },
+  "file_count": 8,
+  "created_at": "2026-03-19T20:56:35.085963Z"
+}
