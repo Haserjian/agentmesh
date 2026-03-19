@@ -193,10 +193,11 @@ jobs:
       - name: Install assay
         run: pip install "assay-ai @ git+https://github.com/Haserjian/assay.git@939d619"
 
-      - name: Import pinned assay signer
+      - name: Import signer and bootstrap trust overlay
         env:
           ASSAY_SIGNER_KEY_B64: ${{ secrets.ASSAY_SIGNER_KEY_B64 }}
           ASSAY_SIGNER_PUB_B64: ${{ secrets.ASSAY_SIGNER_PUB_B64 }}
+          ASSAY_CI_ORG_SIGNER_FINGERPRINT: ${{ vars.ASSAY_CI_ORG_SIGNER_FINGERPRINT }}
         run: |
           set -euo pipefail
           if [ -z "${ASSAY_SIGNER_KEY_B64:-}" ] || [ -z "${ASSAY_SIGNER_PUB_B64:-}" ]; then
@@ -212,7 +213,43 @@ jobs:
             --set-active \
             --json > .assay-signing/import.json
 
-      - name: Build and verify proof pack
+          # Assert imported fingerprint matches repo-pinned expectation
+          FINGERPRINT=$(python3 -c "import json; print(json.load(open('.assay-signing/import.json'))['fingerprint'])")
+          if [ -z "${ASSAY_CI_ORG_SIGNER_FINGERPRINT:-}" ]; then
+            echo "::error::ASSAY_CI_ORG_SIGNER_FINGERPRINT repo variable not set. Cannot verify signer identity."
+            exit 1
+          fi
+          if [ "$FINGERPRINT" != "$ASSAY_CI_ORG_SIGNER_FINGERPRINT" ]; then
+            echo "::error::Fingerprint mismatch: imported=$FINGERPRINT expected=$ASSAY_CI_ORG_SIGNER_FINGERPRINT"
+            exit 1
+          fi
+          echo "Fingerprint verified: ${FINGERPRINT:0:16}..."
+
+          # Bootstrap trust policy overlay with ci-org signer using assay's bootstrap module
+          export OVERLAY_DIR="$RUNNER_TEMP/ci-org-trust"
+          export VERIFIED_FINGERPRINT="$FINGERPRINT"
+          python3 -c "
+          import hashlib, os
+          from pathlib import Path
+          from assay.trust.ci_org_bootstrap import write_ci_org_policy_overlay
+          fp = os.environ['VERIFIED_FINGERPRINT']
+          overlay = write_ci_org_policy_overlay(
+              policy_dir=Path('trust'),
+              output_dir=Path(os.environ['OVERLAY_DIR']),
+              signer_id='ci-assay-signer',
+              fingerprint=fp,
+          )
+          # Receipt: log overlay details for auditability
+          signers_hash = hashlib.sha256(
+              (overlay / 'signers.yaml').read_bytes()
+          ).hexdigest()[:16]
+          print(f'Trust overlay: path={overlay}')
+          print(f'  signer_id=ci-assay-signer')
+          print(f'  fingerprint={fp[:16]}...')
+          print(f'  signers.yaml hash={signers_hash}')
+          "
+
+      - name: Build and verify proof pack with trust gate
         run: |
           set -euo pipefail
           mkdir -p .assay-verify
@@ -230,7 +267,22 @@ jobs:
             --max-age-hours 24 \
             --require-ci-binding \
             --expected-commit-sha "$GITHUB_SHA" \
+            --trust-target ci_gate \
+            --trust-policy-dir "$RUNNER_TEMP/ci-org-trust" \
+            --enforce-trust-gate \
             --json | tee ".assay-verify/verify.json"
+
+          # Verify trust decision
+          python3 -c "
+          import json, sys
+          report = json.load(open('.assay-verify/verify.json'))
+          trust = report.get('trust') or {}
+          decision = (trust.get('acceptance') or {}).get('decision', 'not_evaluated')
+          print(f'Trust decision: {decision}')
+          if decision == 'reject':
+              print('::error::Trust gate rejected the proof pack')
+              sys.exit(1)
+          "
 
       - name: Upload verify artifacts
         if: always()

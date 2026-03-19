@@ -300,6 +300,7 @@ def init_cmd(
         "task_finish": {
             "run_tests": test_command,
             "capsule": capsule_default,
+            "signoff": True,
             "release_all": True,
             "end_episode": True,
         },
@@ -1208,6 +1209,7 @@ def commit_cmd(
                                          help="Append episode ID trailer to commit message"),
     run_tests: Optional[str] = typer.Option(None, "--run-tests", help="Test command to run before commit"),
     capsule: bool = typer.Option(False, "--capsule", help="Also emit a context capsule"),
+    signoff: bool = typer.Option(False, "--signoff", "-S", help="Add Signed-off-by trailer (DCO)"),
     emit_assay: bool = typer.Option(False, "--emit-assay", help="Emit optional Assay receipt after commit"),
     assay_command: str = typer.Option("", "--assay-command", help="Override Assay command (shell)"),
     assay_timeout_s: int = typer.Option(30, "--assay-timeout", help="Assay command timeout seconds"),
@@ -1273,7 +1275,8 @@ def commit_cmd(
         if ep_id:
             trailer = f"{EPISODE_TRAILER_KEY}: {ep_id}"
 
-    ok, sha, err = gitbridge.git_commit(message, trailer=trailer, cwd=cwd)
+    extra_args: list[str] | None = ["--signoff"] if signoff else None
+    ok, sha, err = gitbridge.git_commit(message, extra_args=extra_args, trailer=trailer, cwd=cwd)
     if not ok:
         console.print(f"git commit failed: {err}", style="red")
         raise typer.Exit(1)
@@ -1505,6 +1508,11 @@ def task_finish(
     run_tests: Optional[str] = typer.Option(None, "--run-tests", help="Test command to run before commit"),
     capsule: Optional[bool] = typer.Option(None, "--capsule/--no-capsule",
                                            help="Emit a context capsule with the commit (default from policy)"),
+    signoff: Optional[bool] = typer.Option(
+        None,
+        "--signoff/--no-signoff",
+        help="Add Signed-off-by trailer for DCO (default from policy)",
+    ),
     release_all: Optional[bool] = typer.Option(
         None,
         "--release-all/--keep-claims",
@@ -1537,6 +1545,7 @@ def task_finish(
         return fallback
 
     effective_capsule = _bool_default(capsule, "capsule", True)
+    effective_signoff = _bool_default(signoff, "signoff", False)
     effective_release_all = _bool_default(release_all, "release_all", True)
     effective_end_episode = _bool_default(end_episode, "end_episode", True)
 
@@ -1546,6 +1555,7 @@ def task_finish(
         episode_trailer=True,
         run_tests=effective_run_tests,
         capsule=effective_capsule,
+        signoff=effective_signoff,
     )
 
     # Bridge to orchestrator: transition to PR_OPEN after successful commit
@@ -1572,6 +1582,45 @@ def task_finish(
             console.print(f"Episode [bold]{ep_id}[/bold] ended")
         else:
             console.print("[dim]No active episode to end[/dim]")
+
+
+# -- Bridge commands --
+
+bridge_app = typer.Typer(help="Assay bridge commands.")
+app.add_typer(bridge_app, name="bridge")
+
+
+@bridge_app.command(name="emit")
+def bridge_emit(
+    task_id: str = typer.Option("canary", "--task-id", "-t", help="Task ID for bridge event"),
+    terminal_state: str = typer.Option("MERGED", "--terminal-state", "-s",
+                                       help="Terminal state (MERGED or ABORTED)"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent ID"),
+    episode: Optional[str] = typer.Option(None, "--episode", "-e", help="Episode ID"),
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Repository path (default: cwd)"),
+) -> None:
+    """Emit an assay bridge event and print native bridge status as JSON."""
+    from . import assay_bridge
+    agent_id = agent or _auto_agent_id()
+    episode_id = episode or (episodes.get_current_episode(_get_data_dir()) or "")
+    repo_path = Path(repo) if repo else None
+
+    result = assay_bridge.emit_bridge_event(
+        task_id=task_id,
+        terminal_state=terminal_state,
+        repo_path=repo_path,
+        agent_id=agent_id,
+        episode_id=episode_id,
+        data_dir=_get_data_dir(),
+    )
+    output = {
+        "schema_version": "1",
+        "bridge_status": result.status,
+        "gate_report": result.gate_report,
+        "reason": result.reason,
+        "ccoi_envelope": result.envelope,
+    }
+    console.print(json.dumps(output, indent=2))
 
 
 # -- Weave commands --

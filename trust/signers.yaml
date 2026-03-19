@@ -1,0 +1,49 @@
+# Signer Registry — AgentMesh Trust Policy
+#
+# Mirrors the Assay trust policy format (see assay/trust/signers.yaml).
+# Signer entries are injected at runtime by CI bootstrap; this file ships
+# with an empty signers list so the policy structure is in-repo.
+#
+# Fingerprint must be the SHA-256 hex of the signer's Ed25519 public key.
+
+version: 1
+
+signer_classes:
+  ci-org:
+    description: Organization-controlled signer for CI and protected workflows.
+    allowed_targets:
+      - ci_gate
+      - publication
+    controls:
+      - explicit registry grant
+      - branch protection or workflow identity
+      - rotation policy
+
+verification_profiles:
+  local_verify:
+    accepts_authorization_statuses:
+      - authorized
+      - recognized
+    warns_authorization_statuses:
+      - unrecognized
+    rejects_authorization_statuses:
+      - revoked
+  ci_gate:
+    accepts_authorization_statuses:
+      - authorized
+    rejects_authorization_statuses:
+      - recognized
+      - unrecognized
+      - revoked
+  publication:
+    accepts_authorization_statuses:
+      - authorized
+    rejects_authorization_statuses:
+      - recognized
+      - unrecognized
+      - revoked
+
+signers: []
+# Populated at CI runtime via bootstrap_ci_org_signer overlay.
+# The CI signer (ci-assay-signer) is injected with its fingerprint from
+# the ASSAY_CI_ORG_SIGNER_FINGERPRINT repo variable.

@@ -5,5 +5,8 @@
       "tests/test_secret_detection.py",
       "tests/test_public_private.py"
     ]
+  },
+  "task_finish": {
+    "signoff": true
   }
 }

@@ -324,3 +324,94 @@ def test_cli_commit_assay_required_fails_command(tmp_path: Path, tmp_data_dir: P
     assay_evts = [e for e in evts if e.kind == EventKind.ASSAY_RECEIPT]
     assert len(assay_evts) == 1
     assert assay_evts[0].payload["ok"] is False
+
+
+# -- DCO signoff tests --
+
+
+def test_cli_commit_signoff_adds_trailer(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
+    """--signoff flag should produce a Signed-off-by trailer in the commit."""
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "dco.py").write_text("dco = True\n")
+    subprocess.run(["git", "add", "dco.py"], cwd=str(repo), capture_output=True, check=True)
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "dco_agent")
+
+    result = runner.invoke(app, ["commit", "-m", "add dco", "--signoff", "--no-episode-trailer"])
+    assert result.exit_code == 0, result.output
+
+    log = subprocess.run(
+        ["git", "log", "-1", "--format=%B"], cwd=str(repo),
+        capture_output=True, text=True,
+    ).stdout
+    assert "Signed-off-by:" in log
+
+
+def test_cli_commit_no_signoff_by_default(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
+    """Without --signoff, no Signed-off-by trailer should appear."""
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "nosign.py").write_text("nosign = True\n")
+    subprocess.run(["git", "add", "nosign.py"], cwd=str(repo), capture_output=True, check=True)
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "nosign_agent")
+
+    result = runner.invoke(app, ["commit", "-m", "no signoff", "--no-episode-trailer"])
+    assert result.exit_code == 0, result.output
+
+    log = subprocess.run(
+        ["git", "log", "-1", "--format=%B"], cwd=str(repo),
+        capture_output=True, text=True,
+    ).stdout
+    assert "Signed-off-by:" not in log
+
+
+def test_task_finish_signoff_from_policy(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
+    """task finish should respect signoff=true from policy.json."""
+    repo = _init_repo(tmp_path / "repo")
+    (repo / ".agentmesh").mkdir(parents=True, exist_ok=True)
+    (repo / ".agentmesh" / "policy.json").write_text(
+        '{"task_finish":{"signoff":true,"release_all":false,"end_episode":false}}'
+    )
+    (repo / "policy_dco.py").write_text("pdco = 1\n")
+    subprocess.run(["git", "add", "policy_dco.py"], cwd=str(repo), capture_output=True, check=True)
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "policy_dco_agent")
+
+    from agentmesh.episodes import start_episode
+    start_episode(title="dco policy test", data_dir=tmp_data_dir)
+
+    result = runner.invoke(app, ["task", "finish", "-m", "policy signoff"])
+    assert result.exit_code == 0, result.output
+
+    log = subprocess.run(
+        ["git", "log", "-1", "--format=%B"], cwd=str(repo),
+        capture_output=True, text=True,
+    ).stdout
+    assert "Signed-off-by:" in log
+
+
+# -- Bridge CLI tests --
+
+
+def test_cli_bridge_emit_json_output(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
+    """agentmesh bridge emit should produce JSON with bridge_status field."""
+    import json as _json
+    repo = _init_repo(tmp_path / "repo")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "bridge_agent")
+
+    result = runner.invoke(app, ["bridge", "emit", "--task-id", "test_task", "--repo", str(repo)])
+    assert result.exit_code == 0, result.output
+
+    output = result.output.strip()
+    parsed = _json.loads(output)
+    assert parsed["schema_version"] == "1"
+    assert "bridge_status" in parsed
+    assert parsed["bridge_status"] in ("BRIDGE_EMIT_OK", "BRIDGE_EMIT_DEGRADED")
