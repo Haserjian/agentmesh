@@ -1,7 +1,13 @@
 {
   "schema_version": "1",
-  "trust_decision": "DEFERRED_TO_CI",
-  "reason": "trust gate enforcement runs in CI with bootstrapped signer overlay; local evaluation deferred. Check ci_run.json assay-verify result.",
-  "ci_trust_gate_active": true,
-  "collected_at": "2026-03-19T20:56:18.557297Z"
+  "trust_decision": "accept",
+  "source": "ci_job_logs",
+  "ci_job_id": "67817128279",
+  "ci_check_link": "https://github.com/Haserjian/agentmesh/actions/runs/23316456940/job/67817128279",
+  "fingerprint_verified": true,
+  "ci_evidence": {
+    "fingerprint_prefix": "a211e933a2512129...",
+    "signers_yaml_hash": "e306732d3ee3f5aa"
+  },
+  "collected_at": "2026-03-19T21:04:47.449206Z"
 }

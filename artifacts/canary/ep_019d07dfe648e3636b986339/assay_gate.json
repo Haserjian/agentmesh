@@ -10,7 +10,7 @@
     "min_score": 0.0,
     "regression_detected": false,
     "reasons": [],
-    "timestamp": "2026-03-19T20:56:18.214807+00:00",
+    "timestamp": "2026-03-19T21:04:45.804312+00:00",
     "status": "ok",
     "require_lock": false,
     "lock_status": "not_required"
@@ -23,7 +23,7 @@
     "authority_class": "AUDITING",
     "primitive": "QUERY",
     "correlation_id": "canary",
-    "ts_sent": "2026-03-19T20:56:18.245900Z",
+    "ts_sent": "2026-03-19T21:04:45.832105Z",
     "payload": {
       "bridge": "assay_bridge",
       "action": "gate_check",
@@ -38,7 +38,7 @@
         "min_score": 0.0,
         "regression_detected": false,
         "reasons": [],
-        "timestamp": "2026-03-19T20:56:18.214807+00:00",
+        "timestamp": "2026-03-19T21:04:45.804312+00:00",
         "status": "ok",
         "require_lock": false,
         "lock_status": "not_required"
@@ -46,5 +46,5 @@
       "agent_id": "claude_592a9332"
     }
   },
-  "collected_at": "2026-03-19T20:56:18.283765Z"
+  "collected_at": "2026-03-19T21:04:45.862471Z"
 }

@@ -124,10 +124,27 @@ def collect_weave() -> dict:
 def collect_ci_run(pr: int) -> dict:
     """Artifact 5: ci_run.json"""
     proc = _run(["gh", "pr", "checks", str(pr), "--json", "name,state,bucket"])
+    if proc.returncode != 0:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "pr_number": pr,
+            "error": f"gh pr checks failed: {proc.stderr.strip()}",
+            "all_required_passed": False,
+            "missing_required": sorted(REQUIRED_CHECKS),
+            "collected_at": _now(),
+        }
+
     try:
         checks = json.loads(proc.stdout)
     except json.JSONDecodeError:
-        checks = []
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "pr_number": pr,
+            "error": "gh pr checks returned non-JSON",
+            "all_required_passed": False,
+            "missing_required": sorted(REQUIRED_CHECKS),
+            "collected_at": _now(),
+        }
 
     required_results = {}
     all_checks = []
@@ -143,13 +160,20 @@ def collect_ci_run(pr: int) -> dict:
         if bucket not in ("pass", ""):
             failed.append(name)
 
+    # Fail-closed: every required check must be present and passing
+    missing_required = sorted(REQUIRED_CHECKS - set(required_results.keys()))
+    all_passed = (
+        not missing_required
+        and len(required_results) == len(REQUIRED_CHECKS)
+        and all(v == "pass" for v in required_results.values())
+    )
+
     return {
         "schema_version": SCHEMA_VERSION,
         "pr_number": pr,
         "required_checks": required_results,
-        "all_required_passed": all(
-            v == "pass" for v in required_results.values()
-        ),
+        "missing_required": missing_required,
+        "all_required_passed": all_passed,
         "failed_checks": failed,
         "total_checks": len(all_checks),
         "checks": all_checks,
@@ -166,36 +190,80 @@ def collect_assay_gate() -> dict:
     return result
 
 
-def collect_trust_evaluation() -> dict:
-    """Artifact 7: trust_evaluation.json"""
-    # Try local trust evaluation; degrade gracefully
-    proc = _run(["assay", "verify-pack", "--help"])
-    has_assay = proc.returncode == 0
+def collect_trust_evaluation(pr: int) -> dict:
+    """Artifact 7: trust_evaluation.json
 
-    if not has_assay:
+    Extracts the actual trust decision from the CI assay-verify job logs.
+    Falls back to INCONCLUSIVE (never overclaims).
+    """
+    # Find the assay-verify job for this PR's latest run
+    proc = _run(["gh", "pr", "checks", str(pr), "--json", "name,state,bucket,link"])
+    try:
+        checks = json.loads(proc.stdout)
+    except (json.JSONDecodeError, ValueError):
         return {
             "schema_version": SCHEMA_VERSION,
-            "trust_decision": "SKIP",
-            "reason": "assay CLI not available locally",
+            "trust_decision": "INCONCLUSIVE",
+            "reason": "could not fetch PR checks",
             "collected_at": _now(),
         }
 
-    # Check if trust policy dir exists
-    trust_dir = Path("trust")
-    if not trust_dir.exists():
+    verify_check = next((c for c in checks if c.get("name") == "assay-verify"), None)
+    if not verify_check:
         return {
             "schema_version": SCHEMA_VERSION,
-            "trust_decision": "SKIP",
-            "reason": "no trust/ policy directory in repo",
+            "trust_decision": "INCONCLUSIVE",
+            "reason": "assay-verify check not found in PR checks",
             "collected_at": _now(),
         }
+
+    if verify_check.get("bucket") != "pass":
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "trust_decision": "FAIL",
+            "reason": f"assay-verify check did not pass (state={verify_check.get('state')})",
+            "ci_check_link": verify_check.get("link", ""),
+            "collected_at": _now(),
+        }
+
+    # Extract job ID from the link and fetch logs for the actual trust decision
+    link = verify_check.get("link", "")
+    # link format: https://github.com/.../actions/runs/<run_id>/job/<job_id>
+    job_id = link.rsplit("/", 1)[-1] if "/job/" in link else ""
+
+    trust_decision = "INCONCLUSIVE"
+    fingerprint_verified = False
+    ci_evidence = {}
+
+    if job_id:
+        log_proc = _run(["gh", "api", f"repos/:owner/:repo/actions/jobs/{job_id}/logs"])
+        if log_proc.returncode == 0:
+            logs = log_proc.stdout
+            # Extract trust decision
+            for line in logs.splitlines():
+                if "Trust decision:" in line:
+                    # Format: "2026-... Trust decision: accept"
+                    parts = line.split("Trust decision:")
+                    if len(parts) == 2:
+                        trust_decision = parts[1].strip()
+                if "Fingerprint verified:" in line:
+                    fingerprint_verified = True
+                    parts = line.split("Fingerprint verified:")
+                    if len(parts) == 2:
+                        ci_evidence["fingerprint_prefix"] = parts[1].strip()
+                if "signers.yaml hash=" in line:
+                    parts = line.split("signers.yaml hash=")
+                    if len(parts) == 2:
+                        ci_evidence["signers_yaml_hash"] = parts[1].strip()
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "trust_decision": "DEFERRED_TO_CI",
-        "reason": "trust gate enforcement runs in CI with bootstrapped signer overlay; "
-                  "local evaluation deferred. Check ci_run.json assay-verify result.",
-        "ci_trust_gate_active": True,
+        "trust_decision": trust_decision,
+        "source": "ci_job_logs",
+        "ci_job_id": job_id,
+        "ci_check_link": link,
+        "fingerprint_verified": fingerprint_verified,
+        "ci_evidence": ci_evidence,
         "collected_at": _now(),
     }
 
@@ -271,7 +339,7 @@ def main():
         write_artifact(out_dir, "weave_chain.json", collect_weave())
         write_artifact(out_dir, "ci_run.json", collect_ci_run(args.pr))
         write_artifact(out_dir, "assay_gate.json", collect_assay_gate())
-        write_artifact(out_dir, "trust_evaluation.json", collect_trust_evaluation())
+        write_artifact(out_dir, "trust_evaluation.json", collect_trust_evaluation(args.pr))
         print()
 
     if args.phase in ("post", "full"):

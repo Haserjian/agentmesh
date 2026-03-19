@@ -284,6 +284,10 @@ jobs:
               sys.exit(1)
           "
 
+      - name: Verify artifacts exist
+        if: always()
+        run: ls -la .assay-verify/ 2>/dev/null || echo "WARNING: .assay-verify/ not found"
+
       - name: Upload verify artifacts
         if: always()
         uses: actions/upload-artifact@v4

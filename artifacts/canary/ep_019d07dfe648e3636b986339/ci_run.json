@@ -6,6 +6,7 @@
     "lineage": "pass",
     "assay-verify": "pass"
   },
+  "missing_required": [],
   "all_required_passed": true,
   "failed_checks": [],
   "total_checks": 13,
@@ -76,5 +77,5 @@
       "bucket": "pass"
     }
   ],
-  "collected_at": "2026-03-19T20:56:17.659745Z"
+  "collected_at": "2026-03-19T21:04:45.295294Z"
 }
