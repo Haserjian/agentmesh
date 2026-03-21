@@ -212,3 +212,178 @@ def emit_bridge_event(
     )
 
     return BridgeResult(status=status, gate_report=gate_report, reason=reason, envelope=envelope)
+
+
+# ---------------------------------------------------------------------------
+# Proof Posture bridge
+# ---------------------------------------------------------------------------
+
+_POSTURE_OK = "POSTURE_OK"
+_POSTURE_DEGRADED = "POSTURE_DEGRADED"
+
+
+@dataclass(frozen=True)
+class PostureResult:
+    status: str  # _POSTURE_OK | _POSTURE_DEGRADED
+    posture: dict[str, Any]  # Full posture dict from assay posture --json
+    text: str  # Human-readable rendered summary
+    reason: str  # Empty on OK, human-readable on degraded
+
+
+def _find_proof_packs(repo_path: Path) -> list[Path]:
+    """Find proof pack directories in a repo, newest first."""
+    packs: list[Path] = []
+    for candidate in repo_path.iterdir():
+        if candidate.is_dir() and candidate.name.startswith("proof_pack_"):
+            if (candidate / "pack_manifest.json").exists():
+                packs.append(candidate)
+    return sorted(packs, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def _run_assay_posture(
+    pack_dir: Path,
+    *,
+    require_falsifiers: bool = False,
+) -> tuple[str, dict[str, Any], str, str]:
+    """Run ``assay posture`` and return (status, posture_dict, text, reason)."""
+    if shutil.which("assay") is None:
+        return _POSTURE_DEGRADED, {}, "", "assay CLI not found on PATH"
+
+    cmd = ["assay", "posture", str(pack_dir), "--json"]
+    if require_falsifiers:
+        cmd.append("--require-falsifiers")
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return _POSTURE_DEGRADED, {}, "", "assay posture timed out"
+    except OSError as exc:
+        return _POSTURE_DEGRADED, {}, "", f"failed to start assay: {exc}"
+
+    if proc.returncode == 3:
+        return _POSTURE_DEGRADED, {}, "", f"assay posture: bad input ({proc.stderr.strip()})"
+
+    try:
+        posture = json.loads(proc.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return _POSTURE_DEGRADED, {}, "", "assay posture returned non-JSON output"
+
+    # Also get the text version for PR comments
+    text_cmd = ["assay", "posture", str(pack_dir)]
+    if require_falsifiers:
+        text_cmd.append("--require-falsifiers")
+    try:
+        text_proc = subprocess.run(
+            text_cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        text = text_proc.stdout.strip()
+    except Exception:
+        text = ""
+
+    # Exit 0 (verified/supported) and 1 (incomplete/blocked) are both valid.
+    return _POSTURE_OK, posture, text, ""
+
+
+def _post_pr_comment(pr_ref: str, body: str, repo_path: Path) -> bool:
+    """Post a comment to a PR via ``gh pr comment``. Returns True on success."""
+    if shutil.which("gh") is None:
+        return False
+    try:
+        subprocess.run(
+            ["gh", "pr", "comment", pr_ref, "--body", body],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(repo_path),
+        )
+        return True
+    except Exception:
+        return False
+
+
+def emit_posture_comment(
+    *,
+    task_id: str,
+    pr_ref: str,
+    repo_path: Path | None = None,
+    pack_dir: Path | None = None,
+    require_falsifiers: bool = False,
+    agent_id: str = "",
+    episode_id: str = "",
+    data_dir: Path | None = None,
+) -> PostureResult:
+    """Run proof posture and post a PR comment.
+
+    AgentMesh calls Assay, does not reinterpret Assay.
+    Assay owns posture semantics. AgentMesh owns when/where to attach.
+    """
+    # Resolve repo path
+    if repo_path is None:
+        repo_path = _find_repo_path(task_id, data_dir)
+    if repo_path is None or not repo_path.is_dir():
+        return PostureResult(
+            status=_POSTURE_DEGRADED,
+            posture={},
+            text="",
+            reason="no repo path found for task",
+        )
+
+    # Resolve proof pack
+    if pack_dir is None:
+        packs = _find_proof_packs(repo_path)
+        if not packs:
+            return PostureResult(
+                status=_POSTURE_DEGRADED,
+                posture={},
+                text="",
+                reason=f"no proof packs found in {repo_path}",
+            )
+        pack_dir = packs[0]  # newest
+
+    # Run assay posture
+    status, posture, text, reason = _run_assay_posture(
+        pack_dir, require_falsifiers=require_falsifiers,
+    )
+
+    if status == _POSTURE_DEGRADED:
+        result = PostureResult(status=status, posture=posture, text=text, reason=reason)
+    else:
+        # Format the PR comment
+        disposition = posture.get("disposition", "unknown")
+        header = f"**Proof Posture: {disposition.upper().replace('_', ' ')}**"
+        comment_body = f"{header}\n\n```\n{text}\n```\n\n<sub>Generated by assay posture | pack: {pack_dir.name}</sub>"
+
+        posted = _post_pr_comment(pr_ref, comment_body, repo_path)
+
+        result = PostureResult(
+            status=_POSTURE_OK,
+            posture=posture,
+            text=text,
+            reason="" if posted else "posture computed but gh pr comment failed",
+        )
+
+    # Emit event
+    events.append_event(
+        kind=EventKind.ASSAY_RECEIPT,
+        agent_id=agent_id,
+        payload={
+            "task_id": task_id,
+            "action": "posture_comment",
+            "pr_ref": pr_ref,
+            "bridge_status": result.status,
+            "disposition": posture.get("disposition", ""),
+            "pack_dir": str(pack_dir) if pack_dir else "",
+            "degraded_reason": result.reason,
+        },
+        data_dir=data_dir,
+    )
+
+    return result
