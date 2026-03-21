@@ -467,7 +467,7 @@ def advance_task(
             agent_id=agent_id,
             data_dir=data_dir,
         )
-    return transition_task(
+    task = transition_task(
         task_id,
         to_state,
         agent_id=agent_id,
@@ -475,3 +475,21 @@ def advance_task(
         data_dir=data_dir,
         **update_kwargs,
     )
+
+    # PR_OPEN side effect: emit proof posture comment if PR is available.
+    # AgentMesh calls Assay, does not reinterpret Assay.
+    if to_state == TaskState.PR_OPEN:
+        pr_ref = task.pr_url or task.branch
+        if pr_ref:
+            try:
+                assay_bridge.emit_posture_comment(
+                    task_id=task_id,
+                    pr_ref=pr_ref,
+                    agent_id=agent_id,
+                    episode_id=task.episode_id,
+                    data_dir=data_dir,
+                )
+            except Exception:
+                pass  # Posture is best-effort, never blocks transition
+
+    return task
