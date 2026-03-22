@@ -1213,9 +1213,12 @@ def commit_cmd(
     emit_assay: bool = typer.Option(False, "--emit-assay", help="Emit optional Assay receipt after commit"),
     assay_command: str = typer.Option("", "--assay-command", help="Override Assay command (shell)"),
     assay_timeout_s: int = typer.Option(30, "--assay-timeout", help="Assay command timeout seconds"),
-    assay_required: bool = typer.Option(False, "--assay-required", help="Fail command if Assay emit fails"),
+    assay_required: bool = typer.Option(False, "--assay-required", help="Exit 7 (partial success) if Assay emit fails after commit succeeds"),
 ) -> None:
-    """Wrap git commit with provenance: auto-creates a weave event linking the commit to the episode."""
+    """Wrap git commit with provenance: auto-creates a weave event linking the commit to the episode.
+
+    Exit codes: 0=success, 1=commit failed/nothing staged, 7=commit succeeded but Assay emission failed (partial success).
+    """
     _ensure_db()
     # task_finish calls this function directly; normalize Typer OptionInfo defaults.
     if not isinstance(emit_assay, bool):
@@ -1379,7 +1382,24 @@ def commit_cmd(
             detail = assay_error or assay_stderr or "non-zero exit"
             console.print(f"  assay receipt: failed ({detail})", style="yellow")
             if assay_hard_fail:
-                raise typer.Exit(1)
+                # Commit already succeeded -- exit 7 signals partial success
+                # (commit in history, assay emission failed). NOT exit 1,
+                # which would falsely imply nothing was committed.
+                console.print(f"Committed [bold]{sha[:10]}[/bold]  weave={evt.event_id}")
+                if witness_result:
+                    console.print(f"  witness={witness_result[1][:30]}... signed by {witness_result[3]}")
+                console.print(f"  {len(staged_files)} file(s): {', '.join(staged_files[:5])}")
+                partial = {
+                    "partial_success": True,
+                    "commit_succeeded": True,
+                    "commit_sha": sha,
+                    "weave_event_id": evt.event_id,
+                    "assay_emission": "failed",
+                    "assay_detail": detail,
+                    "exit_code": 7,
+                }
+                console.print(json.dumps(partial))
+                raise typer.Exit(7)
 
     console.print(f"Committed [bold]{sha[:10]}[/bold]  weave={evt.event_id}")
     if witness_result:

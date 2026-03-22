@@ -306,6 +306,9 @@ def test_cli_commit_assay_failure_is_non_blocking_by_default(
 
 
 def test_cli_commit_assay_required_fails_command(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
+    """When assay is required and fails, exit 7 (partial success) -- commit must exist in repo."""
+    import json as _json
+
     repo = _init_repo(tmp_path / "repo")
     (repo / ".agentmesh").mkdir(parents=True, exist_ok=True)
     (repo / ".agentmesh" / "policy.json").write_text(
@@ -318,12 +321,105 @@ def test_cli_commit_assay_required_fails_command(tmp_path: Path, tmp_data_dir: P
     monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
     monkeypatch.setenv("AGENTMESH_AGENT_ID", "assay_agent")
     result = runner.invoke(app, ["commit", "-m", "assay required", "--no-episode-trailer"])
-    assert result.exit_code == 1
 
+    # Exit 7 = partial success (commit succeeded, assay emission failed)
+    assert result.exit_code == 7
+
+    # The git commit MUST exist in repo history -- this is the core invariant
+    log = subprocess.run(
+        ["git", "log", "-1", "--format=%s"], cwd=str(repo),
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert log == "assay required"
+
+    # Assay failure event should be recorded
     evts = events.read_events(data_dir=tmp_data_dir)
     assay_evts = [e for e in evts if e.kind == EventKind.ASSAY_RECEIPT]
     assert len(assay_evts) == 1
     assert assay_evts[0].payload["ok"] is False
+
+    # Structured partial-success output must be present.
+    # Rich console may wrap JSON across lines, so rejoin all output.
+    raw = result.output
+    # Find the JSON object in the output (may span wrapped lines)
+    start = raw.find('{"partial_success"')
+    assert start != -1, f"No structured JSON in output: {raw}"
+    end = raw.find("}", start) + 1
+    # Remove any whitespace/newlines injected by Rich wrapping
+    json_str = raw[start:end].replace("\n", "").replace("  ", " ")
+    partial = _json.loads(json_str)
+    assert partial["partial_success"] is True
+    assert partial["commit_succeeded"] is True
+    assert partial["commit_sha"]  # non-empty
+    assert partial["assay_emission"] == "failed"
+    assert partial["exit_code"] == 7
+
+
+def test_cli_commit_assay_required_partial_success_commit_in_history(
+    tmp_path: Path, tmp_data_dir: Path, monkeypatch,
+) -> None:
+    """Explicit test: commit exists in git history even when assay-required fails."""
+    repo = _init_repo(tmp_path / "repo")
+    (repo / ".agentmesh").mkdir(parents=True, exist_ok=True)
+    (repo / ".agentmesh" / "policy.json").write_text(
+        '{"assay":{"emit_on_commit":true,"command":"false","required":true}}'
+    )
+    (repo / "partial.py").write_text("partial = True\n")
+    subprocess.run(["git", "add", "partial.py"], cwd=str(repo), capture_output=True, check=True)
+
+    # Count commits before
+    before = subprocess.run(
+        ["git", "rev-list", "--count", "HEAD"], cwd=str(repo),
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "partial_agent")
+    result = runner.invoke(app, ["commit", "-m", "partial test", "--no-episode-trailer"])
+    assert result.exit_code == 7  # partial success, NOT 1
+
+    # Count commits after -- must be exactly one more
+    after = subprocess.run(
+        ["git", "rev-list", "--count", "HEAD"], cwd=str(repo),
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert int(after) == int(before) + 1
+
+    # The file must be in the committed tree
+    ls_tree = subprocess.run(
+        ["git", "ls-tree", "--name-only", "HEAD"], cwd=str(repo),
+        capture_output=True, text=True,
+    ).stdout
+    assert "partial.py" in ls_tree
+
+
+def test_cli_commit_assay_required_via_flag(
+    tmp_path: Path, tmp_data_dir: Path, monkeypatch,
+) -> None:
+    """--assay-required flag (not policy) also exits 7 on assay failure."""
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "flag_test.py").write_text("flag = True\n")
+    subprocess.run(["git", "add", "flag_test.py"], cwd=str(repo), capture_output=True, check=True)
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "flag_agent")
+    result = runner.invoke(app, [
+        "commit", "-m", "flag required",
+        "--emit-assay",
+        "--assay-command", "false",
+        "--assay-required",
+        "--no-episode-trailer",
+    ])
+    assert result.exit_code == 7
+
+    # Commit must exist
+    log = subprocess.run(
+        ["git", "log", "-1", "--format=%s"], cwd=str(repo),
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert log == "flag required"
 
 
 # -- DCO signoff tests --
