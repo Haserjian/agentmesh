@@ -2,6 +2,9 @@
 
 Local-first multi-agent coordination and provenance system for coding workflows. Adds deterministic coordination, commit-linked lineage, and portable handoff bundles on top of git.
 
+> **System-wide topology:** See `ccio/docs/constitution/STACK_ATLAS.md` for the organism map,
+> boundary contracts, and shared protocols across all repos.
+
 ## Key paths
 
 | Area | Path | Purpose |
