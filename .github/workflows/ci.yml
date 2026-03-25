@@ -154,7 +154,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install assay
-        run: pip install "assay-ai @ git+https://github.com/Haserjian/assay.git@2fdde60"
+        run: pip install "assay-ai @ git+https://github.com/Haserjian/assay.git@9d5a1b1"
 
       - name: Save baseline on first run
         run: |
@@ -191,7 +191,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install assay
-        run: pip install "assay-ai @ git+https://github.com/Haserjian/assay.git@2fdde60"
+        run: pip install "assay-ai @ git+https://github.com/Haserjian/assay.git@9d5a1b1"
 
       - name: Import signer and bootstrap trust overlay
         env:

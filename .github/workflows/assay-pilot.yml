@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pyyaml "assay-ai==1.11.1"
+          python -m pip install pyyaml "assay-ai @ git+https://github.com/Haserjian/assay.git@9d5a1b1"
 
       - name: Verify assay is available
         run: |
