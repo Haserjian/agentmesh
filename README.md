@@ -60,6 +60,7 @@ AgentMesh integrates with [Assay](https://github.com/Haserjian/assay) to produce
 - **Alpha Gate**: release gating with 6 checks (merged task count, witness verification, weave chain integrity, full transition receipts, watchdog handling, no orphan loss).
 - **Evidence KPI**: nightly workflow tracking evidence pipeline health — pass rates, enforcement dates, trend history.
 - **Evidence Wire Protocol v0**: canonical `_ewp_*` identity envelope for cross-repo evidence flow.
+- **OpenClaw integration (via Assay)**: Assay ships a bounded OpenClaw integration — a subprocess-membrane adapter with receipt emission, allowlist enforcement, and signed proof-pack verification. Try it with `assay try-openclaw`. See the [OpenClaw support doc](https://github.com/Haserjian/assay/blob/main/docs/openclaw-support.md).
 
 Every PR to `main` must pass lineage + assay-gate + assay-verify + weave-integrity checks.
 
