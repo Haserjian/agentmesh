@@ -154,7 +154,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install assay
-        run: pip install "assay-ai==1.18.0"
+        run: pip install "assay-ai==1.22.0"
 
       - name: Save baseline on first run
         run: |
@@ -191,7 +191,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install assay
-        run: pip install "assay-ai==1.18.0"
+        run: pip install "assay-ai==1.22.0"
 
       - name: Import signer and bootstrap trust overlay
         env:
