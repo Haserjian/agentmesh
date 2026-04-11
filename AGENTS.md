@@ -11,6 +11,40 @@ This repo uses AgentMesh as a local coordination + provenance layer around norma
 5. Before publishing docs/artifacts, run `agentmesh classify --staged --json` and resolve all `private`/`review` results.
 6. Before release/PR finalization, run `agentmesh release-check --staged --json`.
 
+## Codex Skill Chain
+
+Use the smallest applicable chain for the task.
+
+- Unfamiliar repo work: `workspace-scout` -> `repo-archaeology` -> `ownership-map`
+- Planned code changes: `patch-planner` -> `change-surgeon`
+- Feature requests: `feature-to-impl` -> `patch-planner`
+- Structural cleanup: `refactor-runner`
+- Large patch review / handoff: `diff-compressor`
+- Thread continuation: `handoff-compiler`
+- Adversarial review: `diff-compressor` -> `reviewer-simulator`
+- Failures and regressions: `test-triage` -> `debug-loop`; flaky or config/default regressions: `repro-pack` -> `test-triage` -> `debug-loop`; CI-owned failures after triage: `ci-fixer`
+- Browser-visible failures: `repro-pack` -> `browser-debug` -> `debug-loop`
+- Incident / parity break analysis: `incident-forensics`
+- Reproduction path: `incident-forensics` -> `repro-pack` -> `debug-loop`
+- Merge or branch conflict cleanup: `merge-reconciler`
+- Public API, schema, or CLI drift: `api-contract`
+- Documentation drift: `docs-sync`
+- Config and env blast radius: `config-surgeon`
+- Rollouts and staged transitions: `migration-planner`
+- Release gate / ship decision: `api-contract` -> `docs-sync` -> `config-surgeon` -> `migration-planner` -> `release-guard`
+- Skill quality and routing checks: `skill-evals`
+- Skill routing checks: `skill-evals` -> `trigger-auditor` -> `routing-lab`
+- Benchmark and scenario curation: `skill-evals` -> `benchmark-curator`
+- Skill versioning and promotion: `skill-registry`
+- Chain selection and routing plans: `chain-orchestrator`
+- Trajectory and continuation traces: `handoff-compiler` -> `trajectory-ledger`
+- Tool / MCP contract stress testing: `tool-harness`
+- Exploratory ideation: `idea-forge`
+- Tool / MCP contract shaping: `tool-contract-optimizer`
+- Identity / auth / permission probing: `boundary-fuzzer`
+- Long-horizon eval design: `scenario-weaver`
+- Risky decisions and preflight: `constitutional-think`
+
 ## Happy Path (Humans + Agents)
 
 ```bash

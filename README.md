@@ -10,6 +10,16 @@ Local-first multi-agent coordination and provenance for coding workflows.
 
 AgentMesh adds deterministic coordination (claims, waits, steals), commit-linked lineage (`AgentMesh-Episode` trailers + weave events), and portable handoff bundles (`.meshpack`) on top of normal git workflows. It can be adopted standalone.
 
+For the ecosystem lineage note, see the shared workspace doc at `/Users/timmybhaserjian/docs/specs/assay-ecosystem-map.md`.
+
+## Authority Layers
+
+- Canonical policy core: [`trust/*`](./trust/), [`AGENTS.md`](./AGENTS.md), [`docs/public-private-boundary.md`](./docs/public-private-boundary.md), [`README.md`](./README.md), [`docs/license-policy.md`](./docs/license-policy.md)
+- Operational guidance: [`docs/alpha-gate-runbook.md`](./docs/alpha-gate-runbook.md), [`docs/alpha-gate-report.md`](./docs/alpha-gate-report.md), [`docs/pilot/*`](./docs/pilot/)
+- Frontier / spec material: [`docs/evidence-wire-protocol-v0.md`](./docs/evidence-wire-protocol-v0.md), [`docs/spec-meshpack-signing-v0.4.md`](./docs/spec-meshpack-signing-v0.4.md), [`docs/spec/cwe-v1.md`](./docs/spec/cwe-v1.md)
+
+When these layers differ, the canonical policy core controls current truth.
+
 ## Install
 
 ```bash
@@ -62,7 +72,7 @@ AgentMesh integrates with [Assay](https://github.com/Haserjian/assay) to produce
 - **Evidence Wire Protocol v0**: canonical `_ewp_*` identity envelope for cross-repo evidence flow.
 - **OpenClaw integration (via Assay)**: Assay ships a bounded OpenClaw integration — a subprocess-membrane adapter with receipt emission, allowlist enforcement, and signed proof-pack verification. Try it with `assay try-openclaw`. See the [OpenClaw support doc](https://github.com/Haserjian/assay/blob/main/docs/openclaw-support.md).
 
-Every PR to `main` must pass lineage + assay-gate + assay-verify + weave-integrity checks.
+In the full Assay-integrated reference workflow, configure branch protection so PRs to `main` require lineage + assay-gate + assay-verify + weave-integrity checks. `assay-gate` is the baseline evidence-readiness score; `assay-verify` is the cryptographic proof-pack verification step.
 
 ## Optional Witness Signing
 
@@ -113,6 +123,7 @@ The action posts a sticky PR comment showing commit coverage. Set `require-trail
 | [assay](https://github.com/Haserjian/assay) | Evidence compiler CLI (tamper-evident audit trails for AI) |
 | [assay-verify-action](https://github.com/Haserjian/assay-verify-action) | GitHub Action for CI evidence verification |
 | [assay-ledger](https://github.com/Haserjian/assay-ledger) | Public transparency ledger |
+| [assay-protocol](https://github.com/Haserjian/assay-protocol) | Normative protocol and conformance/spec layer |
 | [agentmesh-action](https://github.com/Haserjian/agentmesh-action) | GitHub Action for lineage + witness checks |
 
 ## License
