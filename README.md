@@ -1,6 +1,7 @@
 # AgentMesh
 
-> AgentMesh is the provenance engine in the [Assay](https://github.com/Haserjian/assay) ecosystem.
+> Internal coordination and provenance tool.
+> Not part of the customer-facing Assay evidence packet.
 
 [![PyPI](https://img.shields.io/pypi/v/agentmesh-core)](https://pypi.org/project/agentmesh-core/)
 [![Tests](https://img.shields.io/badge/tests-318%20passed-brightgreen)]()
