@@ -13,7 +13,7 @@ before merge. No SDK, no runtime dependency -- just one workflow file.
 Looking for 1-2 teams to pilot it on a real repo (3-5 PRs over a week).
 Setup takes <10 minutes. We handle any issues.
 
-Interested? I can send the quickstart: https://github.com/Haserjian/agentmesh/tree/main/docs/pilot
+Interested? I can send the Threadwork quickstart (repo currently `agentmesh` during migration): https://github.com/Haserjian/agentmesh/tree/main/docs/pilot
 ```
 
 ---
@@ -65,11 +65,11 @@ SUCCESS BAR
 
 LINKS
 
-- Quickstart: https://github.com/Haserjian/agentmesh/tree/main/docs/pilot/quickstart.md
+- Threadwork quickstart (repo currently `agentmesh`): https://github.com/Haserjian/agentmesh/tree/main/docs/pilot/quickstart.md
 - Starter workflow: https://github.com/Haserjian/agentmesh/tree/main/docs/pilot/starter-workflow.yml
 - Failure modes: https://github.com/Haserjian/agentmesh/tree/main/docs/pilot/failure-modes.md
 - Assay (evidence compiler): https://github.com/Haserjian/assay
-- AgentMesh action: https://github.com/Haserjian/agentmesh-action
+- Threadwork action (current repo/action name: `agentmesh-action`): https://github.com/Haserjian/agentmesh-action
 
 Happy to set up a 15-minute call or just async in a thread.
 

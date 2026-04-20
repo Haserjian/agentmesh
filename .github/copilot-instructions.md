@@ -1,4 +1,7 @@
-# Copilot Instructions for AgentMesh
+# Copilot Instructions for Threadwork
+
+Public naming is moving to `Threadwork`. CLI, package, import-path, and trailer
+surfaces still use `agentmesh` naming during the compatibility window.
 
 ## Codebase overview
 
@@ -49,7 +52,7 @@ agentmesh classify --staged --fail-on-private
 - **Models**: Use pydantic BaseModel for all data structures
 - **CLI**: Use typer for new commands; match existing patterns in `cli.py`
 - **Commits**: conventional format `type(scope): description`
-- **Commit trailers**: Include `AgentMesh-Episode: <id>` when working in an episode
+- **Commit trailers**: Include `AgentMesh-Episode: <id>` when working in an episode until trailer aliasing is introduced
 
 ## When to flag for human review
 

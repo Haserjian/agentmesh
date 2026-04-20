@@ -1,6 +1,6 @@
-# AgentMesh
+# Threadwork
 
-> AgentMesh is the provenance engine in the [Assay](https://github.com/Haserjian/assay) ecosystem.
+> Threadwork is the provenance engine in the [Assay](https://github.com/Haserjian/assay) ecosystem.
 
 [![PyPI](https://img.shields.io/pypi/v/agentmesh-core)](https://pypi.org/project/agentmesh-core/)
 [![Tests](https://img.shields.io/badge/tests-318%20passed-brightgreen)]()
@@ -8,7 +8,18 @@
 
 Local-first multi-agent coordination and provenance for coding workflows.
 
-AgentMesh adds deterministic coordination (claims, waits, steals), commit-linked lineage (`AgentMesh-Episode` trailers + weave events), and portable handoff bundles (`.meshpack`) on top of normal git workflows. It can be adopted standalone.
+Threadwork adds deterministic coordination (claims, waits, steals), commit-linked lineage (`AgentMesh-Episode` trailers + weave events), and portable handoff bundles (`.meshpack`) on top of normal git workflows. It can be adopted standalone.
+
+Compatibility note: the repo slug, package, CLI, commit trailers, and state
+paths still use `agentmesh` naming during the migration window. `Threadwork` is
+the canonical public name; `agentmesh` remains the runtime compatibility alias
+for now.
+
+Naming invariant during migration: `Threadwork` is the public name for the
+provenance and coordination substrate. The implementation may continue to use
+`agentmesh` for repository, package, CLI, config, schema, state-path, and
+trailer compatibility until an explicit migration plan exists. Do not rename
+compatibility surfaces as part of narrative/docs cleanup alone.
 
 For the ecosystem lineage note, see the shared workspace doc at `/Users/timmybhaserjian/docs/specs/assay-ecosystem-map.md`.
 
@@ -33,6 +44,9 @@ pipx install "agentmesh-core[witness]"
 
 ## Quick Start
 
+CLI examples below use `agentmesh`, which remains the compatibility command
+during migration.
+
 ```bash
 cd your-repo
 agentmesh init --install-hooks    # set up mesh + Claude Code hooks
@@ -51,7 +65,7 @@ agentmesh task finish --message "Fix login timeout handling" \
 
 ## How It Works
 
-When multiple AI agents (or humans) work in the same repo, AgentMesh prevents chaos:
+When multiple AI agents (or humans) work in the same repo, Threadwork prevents chaos:
 
 - **Claims**: agents lock files/ports/resources before editing. Conflicts are blocked, not merged.
 - **Episodes**: every work session gets a unique ID (`ep_...`) that binds claims, capsules, and commits.
@@ -62,9 +76,10 @@ When multiple AI agents (or humans) work in the same repo, AgentMesh prevents ch
 
 ## Evidence Pipeline
 
-AgentMesh integrates with [Assay](https://github.com/Haserjian/assay) to produce tamper-evident evidence automatically:
+Threadwork integrates with [Assay](https://github.com/Haserjian/assay) to
+produce tamper-evident evidence automatically:
 
-- **Role split**: AgentMesh records runtime lineage and provenance; Assay verifies and packages trust artifacts. AgentMesh answers "how did this work happen?" Assay answers "what can we prove about it?"
+- **Role split**: Threadwork records runtime lineage and provenance; Assay verifies and packages trust artifacts. Threadwork answers "how did this work happen?" Assay answers "what can we prove about it?"
 
 - **Assay Bridge**: every merged or aborted task emits an `ASSAY_RECEIPT` event via subprocess call. If Assay isn't installed, the bridge degrades gracefully.
 - **Alpha Gate**: release gating with 6 checks (merged task count, witness verification, weave chain integrity, full transition receipts, watchdog handling, no orphan loss).
@@ -128,6 +143,6 @@ The action posts a sticky PR comment showing commit coverage. Set `require-trail
 
 ## License
 
-AgentMesh is licensed under Apache-2.0 for current and future development.
+Threadwork is licensed under Apache-2.0 for current and future development.
 
 Published releases up to and including `v0.7.0` remain under MIT as originally released.
