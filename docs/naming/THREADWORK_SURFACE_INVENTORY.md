@@ -5,6 +5,12 @@ Status: inventory-only pass for `AgentMesh` -> `Threadwork`.
 Purpose: list public or compatibility-sensitive `AgentMesh` surfaces without
 renaming them yet.
 
+Baseline: line-number references in the Evidence column below were captured
+against `handoff/m2-switch-2026-04-11` (agentmesh) and the then-current state
+of `assay-toolkit` / `assay-internal`. When read against `main` or any branch
+without the M2 handoff docs, specific line numbers may drift by a handful of
+lines; file paths, surface names, and classifications remain valid.
+
 ## Classification Legend
 
 - `rename now`: low-risk public narrative surface; update in docs/name-first phase
