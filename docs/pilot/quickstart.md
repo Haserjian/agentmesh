@@ -64,7 +64,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install "assay-ai @ git+https://github.com/Haserjian/assay.git@13db5ba"
+      - run: pip install "assay-ai==1.22.0"
       - name: Run evidence gate
         run: |
           mkdir -p .assay
@@ -83,7 +83,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install "assay-ai>=1.10.1"
+      - run: pip install "assay-ai==1.22.0"
       - name: Import pinned assay signer
         env:
           ASSAY_SIGNER_KEY_B64: ${{ secrets.ASSAY_SIGNER_KEY_B64 }}
