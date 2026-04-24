@@ -35,7 +35,7 @@ def weave_event_to_receipt(
     return {
         # Assay required fields
         "receipt_id": f"amesh_{event.event_id}",
-        "type": "agentmesh_weave",
+        "type": "agentmesh.weave/v1",
         "timestamp": event.created_at,
         "schema_version": "1.0",
         "seq": event.sequence_id + seq_offset,
@@ -85,7 +85,7 @@ def witness_to_receipt(
     return {
         # Assay required fields
         "receipt_id": f"amesh_witness_{_witness_content_hash(witness)}",
-        "type": "agentmesh_witness",
+        "type": "agentmesh.witness/v1",
         "timestamp": witness.get("timestamp", ""),
         "schema_version": "1.0",
         "seq": seq,
