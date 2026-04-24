@@ -84,7 +84,7 @@ class TestWeaveEventReceipt:
 
     def test_type_is_agentmesh_weave(self):
         r = weave_event_to_receipt(_make_weave_event())
-        assert r["type"] == "agentmesh_weave"
+        assert r["type"] == "agentmesh.weave/v1"
 
     def test_timestamp_from_event(self):
         r = weave_event_to_receipt(_make_weave_event())
@@ -134,7 +134,7 @@ class TestWitnessReceipt:
 
     def test_type_is_agentmesh_witness(self):
         r = witness_to_receipt(_make_witness())
-        assert r["type"] == "agentmesh_witness"
+        assert r["type"] == "agentmesh.witness/v1"
 
     def test_signer_identity_present(self):
         r = witness_to_receipt(_make_witness())
@@ -155,7 +155,7 @@ class TestWitnessReceipt:
         r = witness_to_receipt(_make_witness())
         serialized = json.dumps(r)
         roundtripped = json.loads(serialized)
-        assert roundtripped["type"] == "agentmesh_witness"
+        assert roundtripped["type"] == "agentmesh.witness/v1"
 
     def test_receipt_id_is_deterministic(self):
         """Same witness input must produce the same receipt_id every time."""
@@ -195,7 +195,7 @@ class TestExportEpisodeProvenance:
         ]
         receipts = export_episode_provenance(events)
         assert len(receipts) == 2
-        assert all(r["type"] == "agentmesh_weave" for r in receipts)
+        assert all(r["type"] == "agentmesh.weave/v1" for r in receipts)
 
     def test_weave_plus_witness_export(self):
         events = [_make_weave_event()]
@@ -203,7 +203,7 @@ class TestExportEpisodeProvenance:
         receipts = export_episode_provenance(events, witnesses)
         assert len(receipts) == 2
         types = {r["type"] for r in receipts}
-        assert types == {"agentmesh_weave", "agentmesh_witness"}
+        assert types == {"agentmesh.weave/v1", "agentmesh.witness/v1"}
 
     def test_empty_export(self):
         receipts = export_episode_provenance([])
@@ -219,7 +219,7 @@ class TestExportEpisodeProvenance:
         seqs = [r["seq"] for r in receipts]
         assert seqs == sorted(seqs), "Receipts must be causally ordered by seq"
         # Witness comes after weave events
-        assert receipts[-1]["type"] == "agentmesh_witness"
+        assert receipts[-1]["type"] == "agentmesh.witness/v1"
 
     def test_all_receipts_json_serializable(self):
         events = [_make_weave_event()]
