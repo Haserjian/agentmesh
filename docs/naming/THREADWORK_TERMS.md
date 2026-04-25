@@ -1,6 +1,6 @@
 # Threadwork Terms
 
-> **Producer/consumer relationship:** Threadwork emits evidence; Assay packages reviewer decisions. Threadwork is a separate product from Assay with a one-way producer→consumer relationship; CCIO sits between them as a claim-admission gate.
+> **Producer/consumer relationship:** Threadwork emits evidence; CCIO admits which claims qualify; Assay packages/verifies evidence into reviewer-ready packets. Threadwork is the producer-side evidence protocol for Assay packets, not a second reviewer-facing product.
 
 Status: proposed naming freeze for migration planning.
 
