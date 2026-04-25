@@ -1,7 +1,15 @@
 # AgentMesh
 
-> Internal coordination and provenance tool.
-> Not part of the customer-facing Assay evidence packet.
+> Threadwork is the public-facing name for AgentMesh's producer-side evidence layer. The runtime entry point and Python package remain `agentmesh`.
+
+## Role in the constellation
+
+- Threadwork produces agent-action evidence.
+- CCIO admits which claims qualify.
+- Assay packages/verifies evidence into reviewer-ready packets.
+- Threadwork is not a reviewer packet; Assay owns that packet layer.
+
+Threadwork emits the witness/episode/lineage trailers and the export dicts that Assay's `receipt_pack.jsonl` consumes.
 
 [![PyPI](https://img.shields.io/pypi/v/agentmesh-core)](https://pypi.org/project/agentmesh-core/)
 [![Tests](https://img.shields.io/badge/tests-318%20passed-brightgreen)]()

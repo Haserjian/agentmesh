@@ -1,5 +1,7 @@
 # Threadwork Terms
 
+> **Producer/consumer relationship:** Threadwork emits evidence; CCIO admits which claims qualify; Assay packages/verifies evidence into reviewer-ready packets. Threadwork is the producer-side evidence protocol for Assay packets, not a second reviewer-facing product.
+
 Status: proposed naming freeze for migration planning.
 
 This document locks the ontology before any broad rename. It defines the
