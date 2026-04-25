@@ -50,7 +50,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install assay
-        run: pip install "assay-ai @ git+https://github.com/Haserjian/assay.git@13db5ba"
+        run: pip install "assay-ai==1.22.0"
 
       - name: Run evidence gate
         run: |
@@ -79,7 +79,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install assay
-        run: pip install "assay-ai>=1.10.1"
+        run: pip install "assay-ai==1.22.0"
 
       - name: Import pinned assay signer
         env:
