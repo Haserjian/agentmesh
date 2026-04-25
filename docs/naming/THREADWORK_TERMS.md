@@ -1,5 +1,7 @@
 # Threadwork Terms
 
+> **Producer/consumer relationship:** Threadwork emits evidence; Assay packages reviewer decisions. Threadwork is a separate product from Assay with a one-way producer→consumer relationship; CCIO sits between them as a claim-admission gate.
+
 Status: proposed naming freeze for migration planning.
 
 This document locks the ontology before any broad rename. It defines the
