@@ -114,6 +114,8 @@ def run_tests(command: str, cwd: str | None = None) -> tuple[bool, str]:
 
     Summary is last 20 lines of combined output.
     """
+    # Boundary note: this is an explicit developer-local command surface, not
+    # an Assay/Guardian trust-evidence path. Keep shell=True confined here.
     try:
         result = subprocess.run(
             command, shell=True, capture_output=True, text=True,

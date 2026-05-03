@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -109,6 +111,7 @@ def test_task_finish_commits_and_closes_task(
     (repo / "src").mkdir(parents=True, exist_ok=True)
     (repo / "src/auth.py").write_text("TOKEN_TIMEOUT = 30\n")
     subprocess.run(["git", "add", "src/auth.py"], cwd=str(repo), capture_output=True, check=True)
+    test_python = shlex.quote(sys.executable)
 
     finish = runner.invoke(
         app,
@@ -118,7 +121,7 @@ def test_task_finish_commits_and_closes_task(
             "--message",
             "fix auth timeout",
             "--run-tests",
-            "python3 -c 'print(123)'",
+            f"{test_python} -c 'print(123)'",
             "--no-capsule",
         ],
     )
@@ -161,7 +164,10 @@ def test_task_commands_use_policy_defaults(
         "schema_version": "1.0",
         "claims": {"ttl_seconds": 123},
         "task_finish": {
-            "run_tests": "python3 -c \"open('policy_ran.txt','w').write('ok')\"",
+            "run_tests": (
+                f"{shlex.quote(sys.executable)} "
+                "-c \"open('policy_ran.txt','w').write('ok')\""
+            ),
             "capsule": False,
             "release_all": False,
             "end_episode": False,

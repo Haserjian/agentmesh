@@ -54,6 +54,9 @@ mcp = [
 witness = [
     "cryptography>=42.0",
 ]
+assay = [
+    "assay-ai>=1.22.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentmesh"]

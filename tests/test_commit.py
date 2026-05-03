@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
@@ -16,6 +17,31 @@ from agentmesh.models import EventKind
 from agentmesh.weaver import append_weave, export_weave_md, verify_weave
 
 runner = CliRunner()
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def _mock_assay_subprocess(returncode: int = 0, stdout: str = "", stderr: str = ""):
+    def _run(cmd, *args, **kwargs):
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "assay":
+            return subprocess.CompletedProcess(
+                args=list(cmd),
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    return _run
+
+
+def _assay_subprocess_calls(mock_run):
+    return [
+        call for call in mock_run.call_args_list
+        if call.args
+        and isinstance(call.args[0], (list, tuple))
+        and call.args[0]
+        and call.args[0][0] == "assay"
+    ]
 
 
 def _init_repo(tmp_path: Path) -> Path:
@@ -259,11 +285,11 @@ def test_weave_verify_beyond_100_events(tmp_data_dir: Path) -> None:
     assert valid, err
 
 
-def test_cli_commit_emits_assay_receipt_event(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
+def test_allows_named_assay_gate_preset(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
     repo = _init_repo(tmp_path / "repo")
     (repo / ".agentmesh").mkdir(parents=True, exist_ok=True)
     (repo / ".agentmesh" / "policy.json").write_text(
-        '{"assay":{"emit_on_commit":true,"command":"python3 -c \\"print(123)\\""}}'
+        '{"assay":{"emit_on_commit":true,"command":"assay-gate-check"}}'
     )
     (repo / "with_assay.py").write_text("print('x')\n")
     subprocess.run(["git", "add", "with_assay.py"], cwd=str(repo), capture_output=True, check=True)
@@ -271,13 +297,49 @@ def test_cli_commit_emits_assay_receipt_event(tmp_path: Path, tmp_data_dir: Path
     monkeypatch.chdir(repo)
     monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
     monkeypatch.setenv("AGENTMESH_AGENT_ID", "assay_agent")
-    result = runner.invoke(app, ["commit", "-m", "with assay", "--no-episode-trailer"])
+    with patch("agentmesh.cli.subprocess.run") as mock_run:
+        mock_run.side_effect = _mock_assay_subprocess(returncode=0, stdout='{"ok":true}')
+        result = runner.invoke(app, ["commit", "-m", "with assay", "--no-episode-trailer"])
     assert result.exit_code == 0, result.output
 
     evts = events.read_events(data_dir=tmp_data_dir)
     assay_evts = [e for e in evts if e.kind == EventKind.ASSAY_RECEIPT]
     assert len(assay_evts) == 1
-    assert assay_evts[0].payload["ok"] is True
+    payload = assay_evts[0].payload
+    decision = payload["guardian_decision_receipt"]
+    assert payload["ok"] is True
+    assert payload["command_id"] == "assay-gate-check"
+    assert decision["guardian_decision"] == "allow"
+    assert decision["decision_reason"] == "registered_assay_command_preset"
+    assert decision["argv_redacted"] == [
+        "assay", "gate", "check", "<repo>", "--min-score", "0", "--json",
+    ]
+
+
+def test_allowed_command_uses_shell_false(tmp_path: Path, tmp_data_dir: Path, monkeypatch) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "with_assay.py").write_text("print('x')\n")
+    subprocess.run(["git", "add", "with_assay.py"], cwd=str(repo), capture_output=True, check=True)
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "assay_agent")
+    with patch("agentmesh.cli.subprocess.run") as mock_run:
+        mock_run.side_effect = _mock_assay_subprocess(returncode=0, stdout='{"ok":true}')
+        result = runner.invoke(
+            app,
+            [
+                "commit", "-m", "with assay", "--no-episode-trailer",
+                "--emit-assay", "--assay-command", "assay-gate-check",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assay_calls = _assay_subprocess_calls(mock_run)
+    assert len(assay_calls) == 1
+    args, kwargs = assay_calls[0]
+    assert args[0] == ["assay", "gate", "check", str(repo), "--min-score", "0", "--json"]
+    assert kwargs["shell"] is False
 
 
 def test_cli_commit_assay_failure_is_non_blocking_by_default(
@@ -288,7 +350,7 @@ def test_cli_commit_assay_failure_is_non_blocking_by_default(
     repo = _init_repo(tmp_path / "repo")
     (repo / ".agentmesh").mkdir(parents=True, exist_ok=True)
     (repo / ".agentmesh" / "policy.json").write_text(
-        '{"assay":{"emit_on_commit":true,"command":"false","required":false}}'
+        '{"assay":{"emit_on_commit":true,"command":"assay-gate-check","required":false}}'
     )
     (repo / "assay_fail.py").write_text("print('x')\n")
     subprocess.run(["git", "add", "assay_fail.py"], cwd=str(repo), capture_output=True, check=True)
@@ -296,7 +358,9 @@ def test_cli_commit_assay_failure_is_non_blocking_by_default(
     monkeypatch.chdir(repo)
     monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
     monkeypatch.setenv("AGENTMESH_AGENT_ID", "assay_agent")
-    result = runner.invoke(app, ["commit", "-m", "assay fails", "--no-episode-trailer"])
+    with patch("agentmesh.cli.subprocess.run") as mock_run:
+        mock_run.side_effect = _mock_assay_subprocess(returncode=1, stderr="gate failed")
+        result = runner.invoke(app, ["commit", "-m", "assay fails", "--no-episode-trailer"])
     assert result.exit_code == 0, result.output
 
     evts = events.read_events(data_dir=tmp_data_dir)
@@ -312,7 +376,7 @@ def test_cli_commit_assay_required_fails_command(tmp_path: Path, tmp_data_dir: P
     repo = _init_repo(tmp_path / "repo")
     (repo / ".agentmesh").mkdir(parents=True, exist_ok=True)
     (repo / ".agentmesh" / "policy.json").write_text(
-        '{"assay":{"emit_on_commit":true,"command":"false","required":true}}'
+        '{"assay":{"emit_on_commit":true,"command":"assay-gate-check","required":true}}'
     )
     (repo / "assay_required.py").write_text("print('x')\n")
     subprocess.run(["git", "add", "assay_required.py"], cwd=str(repo), capture_output=True, check=True)
@@ -320,7 +384,9 @@ def test_cli_commit_assay_required_fails_command(tmp_path: Path, tmp_data_dir: P
     monkeypatch.chdir(repo)
     monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
     monkeypatch.setenv("AGENTMESH_AGENT_ID", "assay_agent")
-    result = runner.invoke(app, ["commit", "-m", "assay required", "--no-episode-trailer"])
+    with patch("agentmesh.cli.subprocess.run") as mock_run:
+        mock_run.side_effect = _mock_assay_subprocess(returncode=1, stderr="gate failed")
+        result = runner.invoke(app, ["commit", "-m", "assay required", "--no-episode-trailer"])
 
     # Exit 7 = partial success (commit succeeded, assay emission failed)
     assert result.exit_code == 7
@@ -362,7 +428,7 @@ def test_cli_commit_assay_required_partial_success_commit_in_history(
     repo = _init_repo(tmp_path / "repo")
     (repo / ".agentmesh").mkdir(parents=True, exist_ok=True)
     (repo / ".agentmesh" / "policy.json").write_text(
-        '{"assay":{"emit_on_commit":true,"command":"false","required":true}}'
+        '{"assay":{"emit_on_commit":true,"command":"assay-gate-check","required":true}}'
     )
     (repo / "partial.py").write_text("partial = True\n")
     subprocess.run(["git", "add", "partial.py"], cwd=str(repo), capture_output=True, check=True)
@@ -376,7 +442,9 @@ def test_cli_commit_assay_required_partial_success_commit_in_history(
     monkeypatch.chdir(repo)
     monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
     monkeypatch.setenv("AGENTMESH_AGENT_ID", "partial_agent")
-    result = runner.invoke(app, ["commit", "-m", "partial test", "--no-episode-trailer"])
+    with patch("agentmesh.cli.subprocess.run") as mock_run:
+        mock_run.side_effect = _mock_assay_subprocess(returncode=1, stderr="gate failed")
+        result = runner.invoke(app, ["commit", "-m", "partial test", "--no-episode-trailer"])
     assert result.exit_code == 7  # partial success, NOT 1
 
     # Count commits after -- must be exactly one more
@@ -405,13 +473,15 @@ def test_cli_commit_assay_required_via_flag(
     monkeypatch.chdir(repo)
     monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
     monkeypatch.setenv("AGENTMESH_AGENT_ID", "flag_agent")
-    result = runner.invoke(app, [
-        "commit", "-m", "flag required",
-        "--emit-assay",
-        "--assay-command", "false",
-        "--assay-required",
-        "--no-episode-trailer",
-    ])
+    with patch("agentmesh.cli.subprocess.run") as mock_run:
+        mock_run.side_effect = _mock_assay_subprocess(returncode=1, stderr="gate failed")
+        result = runner.invoke(app, [
+            "commit", "-m", "flag required",
+            "--emit-assay",
+            "--assay-command", "assay-gate-check",
+            "--assay-required",
+            "--no-episode-trailer",
+        ])
     assert result.exit_code == 7
 
     # Commit must exist
@@ -511,3 +581,78 @@ def test_cli_bridge_emit_json_output(tmp_path: Path, tmp_data_dir: Path, monkeyp
     assert parsed["schema_version"] == "1"
     assert "bridge_status" in parsed
     assert parsed["bridge_status"] in ("BRIDGE_EMIT_OK", "BRIDGE_EMIT_DEGRADED")
+
+
+def test_denies_assay_command_shell_injection(
+    tmp_path: Path,
+    tmp_data_dir: Path,
+    monkeypatch,
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "assay_injection.py").write_text("print('x')\n")
+    subprocess.run(["git", "add", "assay_injection.py"], cwd=str(repo), capture_output=True, check=True)
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "assay_agent")
+    with patch("agentmesh.cli.subprocess.run") as mock_run:
+        mock_run.side_effect = _mock_assay_subprocess()
+        result = runner.invoke(
+            app,
+            [
+                "commit", "-m", "assay denied", "--no-episode-trailer",
+                "--emit-assay", "--assay-command", "assay-gate-check; touch pwned",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert _assay_subprocess_calls(mock_run) == []
+    assert not (repo / "pwned").exists()
+
+    evts = events.read_events(data_dir=tmp_data_dir)
+    assay_evts = [e for e in evts if e.kind == EventKind.ASSAY_RECEIPT]
+    assert len(assay_evts) == 1
+    payload = assay_evts[0].payload
+    decision = payload["guardian_decision_receipt"]
+    assert payload["ok"] is False
+    assert payload["returncode"] == 126
+    assert decision["guardian_decision"] == "deny"
+    assert decision["decision_reason"] == "shell_metacharacter_forbidden"
+    assert decision["command_id"] == "rejected"
+    assert "rejected_command_digest" in decision
+
+
+def test_denied_command_emits_decision_receipt(
+    tmp_path: Path,
+    tmp_data_dir: Path,
+    monkeypatch,
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    (repo / ".agentmesh").mkdir(parents=True, exist_ok=True)
+    (repo / ".agentmesh" / "policy.json").write_text(
+        '{"assay":{"emit_on_commit":true,"command":"register-mcp-server","input_origin":"model_suggested"}}'
+    )
+    (repo / "assay_denied.py").write_text("print('x')\n")
+    subprocess.run(["git", "add", "assay_denied.py"], cwd=str(repo), capture_output=True, check=True)
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AGENTMESH_DATA_DIR", str(tmp_data_dir))
+    monkeypatch.setenv("AGENTMESH_AGENT_ID", "assay_agent")
+    with patch("agentmesh.cli.subprocess.run") as mock_run:
+        mock_run.side_effect = _mock_assay_subprocess()
+        result = runner.invoke(app, ["commit", "-m", "assay denied", "--no-episode-trailer"])
+
+    assert result.exit_code == 0, result.output
+    assert _assay_subprocess_calls(mock_run) == []
+
+    evts = events.read_events(data_dir=tmp_data_dir)
+    assay_evts = [e for e in evts if e.kind == EventKind.ASSAY_RECEIPT]
+    assert len(assay_evts) == 1
+    decision = assay_evts[0].payload["guardian_decision_receipt"]
+    assert decision["schema"] == "agentmesh.guardian_tool_decision/v1"
+    assert decision["tool_id"] == "agentmesh.assay_hook"
+    assert decision["input_origin"] == "model_suggested"
+    assert decision["guardian_decision"] == "deny"
+    assert decision["decision_reason"] == "unregistered_assay_command_preset"
+    assert decision["argv_redacted"] == []
+    assert decision["argv_digest"].startswith("sha256:")

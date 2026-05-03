@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -25,6 +26,11 @@ console = Console()
 
 _DATA_DIR: Path | None = None
 EPISODE_TRAILER_KEY = "AgentMesh-Episode"
+ASSAY_HOOK_POLICY_VERSION = "agentmesh.assay_hook/v1"
+ASSAY_HOOK_TOOL_ID = "agentmesh.assay_hook"
+_ASSAY_HOOK_DEFAULT_COMMAND = "assay-gate-check"
+_ASSAY_HOOK_COMMANDS = {"assay-gate-check", "assay-receipt-emit"}
+_SHELL_METACHARS = frozenset(";&|<>()`$\\\n\r")
 
 
 def _get_data_dir() -> Path | None:
@@ -114,6 +120,94 @@ def _policy_get(policy: dict[str, Any], keys: list[str], default: Any) -> Any:
             return default
         value = value[key]
     return value
+
+
+def _stable_json_digest(obj: Any) -> str:
+    data = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def _redact_assay_argv(argv: list[str], repo_path: Path) -> list[str]:
+    repo = str(repo_path)
+    return ["<repo>" if arg == repo else arg for arg in argv]
+
+
+def _assay_hook_decision_receipt(
+    *,
+    command_id: str,
+    input_origin: str,
+    guardian_decision: str,
+    decision_reason: str,
+    repo_path: Path,
+    argv: list[str] | None = None,
+    rejected_command_digest: str = "",
+) -> dict[str, Any]:
+    redacted = _redact_assay_argv(argv or [], repo_path)
+    receipt: dict[str, Any] = {
+        "schema": "agentmesh.guardian_tool_decision/v1",
+        "tool_id": ASSAY_HOOK_TOOL_ID,
+        "command_id": command_id,
+        "input_origin": input_origin,
+        "guardian_decision": guardian_decision,
+        "decision_reason": decision_reason,
+        "argv_digest": _stable_json_digest(argv or []),
+        "argv_redacted": redacted,
+        "redaction_policy": "assay.argv_redaction/v1",
+        "policy_version": ASSAY_HOOK_POLICY_VERSION,
+    }
+    if rejected_command_digest:
+        receipt["rejected_command_digest"] = rejected_command_digest
+    return receipt
+
+
+def _resolve_assay_hook_command(
+    command_id: str,
+    *,
+    repo_path: Path,
+    input_origin: str,
+) -> tuple[list[str] | None, dict[str, Any]]:
+    """Resolve an Assay hook command preset into structured argv.
+
+    The commit hook is part of the proof boundary, so it accepts only named
+    presets. Raw shell strings are denied and recorded without logging the raw
+    command text.
+    """
+    normalized = command_id.strip() or _ASSAY_HOOK_DEFAULT_COMMAND
+    rejected_digest = _stable_json_digest({"command": normalized})
+
+    if any(ch in normalized for ch in _SHELL_METACHARS):
+        return None, _assay_hook_decision_receipt(
+            command_id="rejected",
+            input_origin=input_origin,
+            guardian_decision="deny",
+            decision_reason="shell_metacharacter_forbidden",
+            repo_path=repo_path,
+            rejected_command_digest=rejected_digest,
+        )
+
+    if normalized not in _ASSAY_HOOK_COMMANDS:
+        return None, _assay_hook_decision_receipt(
+            command_id="rejected",
+            input_origin=input_origin,
+            guardian_decision="deny",
+            decision_reason="unregistered_assay_command_preset",
+            repo_path=repo_path,
+            rejected_command_digest=rejected_digest,
+        )
+
+    if normalized == "assay-gate-check":
+        argv = ["assay", "gate", "check", str(repo_path), "--min-score", "0", "--json"]
+    else:
+        argv = ["assay", "receipt", "emit"]
+
+    return argv, _assay_hook_decision_receipt(
+        command_id=normalized,
+        input_origin=input_origin,
+        guardian_decision="allow",
+        decision_reason="registered_assay_command_preset",
+        repo_path=repo_path,
+        argv=argv,
+    )
 
 
 def _write_scaffold_file(path: Path, content: str, force: bool) -> str:
@@ -1141,6 +1235,70 @@ def episode_import_cmd(
     console.print(f"Imported: {counts}")
 
 
+@episode_app.command(name="assay-pack")
+def episode_assay_pack_cmd(
+    episode_id: Optional[str] = typer.Argument(None, help="Episode ID. Defaults to current episode."),
+    out: Optional[str] = typer.Option(None, "--out", "-o", help="Output proof-pack directory"),
+    outputs: Optional[str] = typer.Option(None, "--outputs", help="Episode outputs directory to manifest"),
+    results: Optional[str] = typer.Option(None, "--results", help="Result artifact, e.g. results.xml"),
+    episode_script: Optional[str] = typer.Option(None, "--episode-script", help="Canonical episode script sidecar"),
+    repo: Optional[str] = typer.Option(None, "--repo", help="Repository path for commit provenance"),
+    mode: str = typer.Option("shadow", "--mode", help="Assay pack mode: shadow|enforced|breakglass"),
+    json_out: bool = typer.Option(False, "--json", help="Output as JSON"),
+) -> None:
+    """Build an Assay proof pack from AgentMesh episode receipts."""
+    _ensure_db()
+    target_episode = episode_id or episodes.get_current_episode(_get_data_dir())
+    if not target_episode:
+        console.print("[red]No episode supplied and no current episode is active[/red]")
+        raise typer.Exit(1)
+
+    out_path = Path(out) if out else Path(f"proof_pack_{target_episode}")
+    repo_path = Path(repo).resolve() if repo else (Path.cwd() if gitbridge.is_git_repo(os.getcwd()) else None)
+    outputs_path = Path(outputs).resolve() if outputs else None
+    results_path = Path(results).resolve() if results else None
+    script_path = Path(episode_script).resolve() if episode_script else None
+
+    try:
+        from .assay_pack import build_agentmesh_assay_pack
+
+        result = build_agentmesh_assay_pack(
+            target_episode,
+            out_path,
+            data_dir=_get_data_dir(),
+            repo_path=repo_path,
+            outputs_dir=outputs_path,
+            results_path=results_path,
+            episode_script=script_path,
+            mode=mode,
+        )
+    except (RuntimeError, ValueError, OSError) as exc:
+        if json_out:
+            console.print(json.dumps({"status": "error", "error": str(exc)}))
+        else:
+            console.print(f"[red]Error:[/] {exc}")
+        raise typer.Exit(1)
+
+    payload = {
+        "status": "ok",
+        "episode_id": result.run_id,
+        "pack_dir": str(result.pack_dir),
+        "receipt_count": result.receipt_count,
+        "output_root_digest": result.output_root_digest,
+        "sidecar_dir": str(result.sidecar_dir),
+        "verify_command": f"assay verify-pack {result.pack_dir}",
+    }
+    if json_out:
+        console.print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    console.print(f"Assay proof pack: [bold]{result.pack_dir}[/bold]")
+    console.print(f"  episode={result.run_id}")
+    console.print(f"  receipts={result.receipt_count}")
+    if result.output_root_digest:
+        console.print(f"  outputs={result.output_root_digest}")
+    console.print(f"  verify: assay verify-pack {result.pack_dir}")
+
+
 # -- Wait/Steal commands --
 
 @app.command()
@@ -1211,7 +1369,7 @@ def commit_cmd(
     capsule: bool = typer.Option(False, "--capsule", help="Also emit a context capsule"),
     signoff: bool = typer.Option(False, "--signoff", "-S", help="Add Signed-off-by trailer (DCO)"),
     emit_assay: bool = typer.Option(False, "--emit-assay", help="Emit optional Assay receipt after commit"),
-    assay_command: str = typer.Option("", "--assay-command", help="Override Assay command (shell)"),
+    assay_command: str = typer.Option("", "--assay-command", help="Assay hook preset, e.g. assay-gate-check"),
     assay_timeout_s: int = typer.Option(30, "--assay-timeout", help="Assay command timeout seconds"),
     assay_required: bool = typer.Option(False, "--assay-required", help="Exit 7 (partial success) if Assay emit fails after commit succeeds"),
 ) -> None:
@@ -1317,15 +1475,22 @@ def commit_cmd(
     if not isinstance(assay_cfg, dict):
         assay_cfg = {}
     assay_enabled = emit_assay or bool(assay_cfg.get("emit_on_commit", False))
-    assay_cmd = assay_command.strip() or str(assay_cfg.get("command", "")).strip()
+    assay_cli_command = assay_command.strip()
+    assay_cfg_command = str(
+        assay_cfg.get("preset", assay_cfg.get("command", ""))
+    ).strip()
+    assay_command_id = assay_cli_command or assay_cfg_command or _ASSAY_HOOK_DEFAULT_COMMAND
+    assay_input_origin = (
+        "human_cli"
+        if assay_cli_command
+        else str(assay_cfg.get("input_origin", "repo_policy" if assay_cfg else "default"))
+    )
     cfg_timeout = assay_cfg.get("timeout_s", 30)
     cfg_timeout_s = cfg_timeout if isinstance(cfg_timeout, int) else 30
     effective_assay_timeout = assay_timeout_s if assay_timeout_s > 0 else max(cfg_timeout_s, 1)
     assay_hard_fail = assay_required or bool(assay_cfg.get("required", False))
 
     if assay_enabled:
-        if not assay_cmd:
-            assay_cmd = "assay receipt emit"
         episode_id = episodes.get_current_episode(_get_data_dir()) or ""
         env = {
             **os.environ,
@@ -1342,23 +1507,37 @@ def commit_cmd(
         assay_stdout = ""
         assay_stderr = ""
         assay_error = ""
-        try:
-            proc = subprocess.run(
-                assay_cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=effective_assay_timeout,
-                cwd=cwd,
-                env=env,
-            )
-            returncode = proc.returncode
-            assay_stdout = (proc.stdout or "").strip()
-            assay_stderr = (proc.stderr or "").strip()
-        except subprocess.TimeoutExpired:
-            assay_error = f"assay command timed out after {effective_assay_timeout}s"
-        except OSError as exc:
-            assay_error = str(exc)
+        assay_argv, decision_receipt = _resolve_assay_hook_command(
+            assay_command_id,
+            repo_path=Path(cwd),
+            input_origin=assay_input_origin,
+        )
+        if decision_receipt["guardian_decision"] == "deny":
+            returncode = 126
+            assay_error = decision_receipt["decision_reason"]
+        else:
+            try:
+                proc = subprocess.run(
+                    assay_argv,
+                    shell=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=effective_assay_timeout,
+                    cwd=cwd,
+                    env=env,
+                )
+                returncode = proc.returncode
+                assay_stdout = (proc.stdout or "").strip()
+                assay_stderr = (proc.stderr or "").strip()
+            except subprocess.TimeoutExpired:
+                assay_error = f"assay command timed out after {effective_assay_timeout}s"
+            except OSError as exc:
+                assay_error = str(exc)
+                decision_receipt = {
+                    **decision_receipt,
+                    "guardian_decision": "deny",
+                    "decision_reason": "assay_command_start_failed",
+                }
 
         assay_ok = returncode == 0 and not assay_error
         events.append_event(
@@ -1366,12 +1545,25 @@ def commit_cmd(
             agent_id=agent_id,
             payload={
                 "sha": sha,
-                "command": assay_cmd,
+                "command": decision_receipt["command_id"],
+                "command_id": decision_receipt["command_id"],
+                "tool_id": decision_receipt["tool_id"],
                 "ok": assay_ok,
                 "returncode": returncode,
                 "stdout": assay_stdout[-1000:],
                 "stderr": assay_stderr[-1000:],
                 "error": assay_error,
+                "guardian_decision_receipt": decision_receipt,
+                "guardian_decision": decision_receipt["guardian_decision"],
+                "decision_reason": decision_receipt["decision_reason"],
+                "argv_digest": decision_receipt["argv_digest"],
+                "argv_redacted": decision_receipt["argv_redacted"],
+                "policy_version": decision_receipt["policy_version"],
+                # Evidence Wire Protocol v0 envelope
+                "_ewp_version": "0",
+                "_ewp_origin": "agentmesh/assay_commit_hook",
+                "_ewp_episode_id": episode_id,
+                "_ewp_agent_id": agent_id,
             },
             data_dir=_get_data_dir(),
         )

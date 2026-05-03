@@ -259,11 +259,10 @@ def test_bridge_always_emits_event_ok(data_dir, repo_dir):
 
 # -- 9. Event always emitted on DEGRADED --
 
-def test_bridge_always_emits_event_degraded(data_dir):
-    # Stub Path.cwd() to a temp dir without .git so the CWD fallback in
-    # _find_repo_path doesn't accidentally resolve a real git repo and
-    # succeed when assay is installed locally.
-    with patch.object(Path, "cwd", return_value=data_dir):
+def test_bridge_always_emits_event_degraded(data_dir, tmp_path):
+    non_git = tmp_path / "not_a_repo"
+    non_git.mkdir()
+    with patch("agentmesh.assay_bridge.Path.cwd", return_value=non_git):
         emit_bridge_event(
             task_id="task_evt_deg",
             terminal_state="ABORTED",

@@ -341,6 +341,69 @@ jobs:
           path: .assay-verify/
           if-no-files-found: warn
 
+  agentmesh-assay-pack:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install AgentMesh and Assay
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,assay]"
+
+      - name: Build, verify, and replay AgentMesh Assay proof pack
+        env:
+          AGENTMESH_DATA_DIR: ${{ github.workspace }}/.agentmesh-ci
+          AGENTMESH_AGENT_ID: ci_assay_pack
+        run: |
+          set -euo pipefail
+          mkdir -p .assay-verify "$AGENTMESH_DATA_DIR"
+
+          git config user.email "agentmesh-ci@example.invalid"
+          git config user.name "AgentMesh CI"
+
+          agentmesh episode start --title "CI AgentMesh Assay proof pack"
+          EPISODE_ID="$(cat "$AGENTMESH_DATA_DIR/current_episode")"
+
+          bash scripts/episode.sh
+          test -s outputs/episode_output.json
+          test -s results.xml
+
+          git add outputs results.xml
+          agentmesh commit \
+            --message "ci canonical AgentMesh episode" \
+            --no-episode-trailer \
+            --emit-assay \
+            --assay-command assay-gate-check \
+            --assay-required
+
+          agentmesh episode assay-pack "$EPISODE_ID" \
+            --outputs outputs \
+            --results results.xml \
+            --episode-script scripts/episode.sh \
+            --out ".assay-verify/proof_pack_ci" \
+            --json \
+            | tee ".assay-verify/pack.json"
+
+          assay verify-pack ".assay-verify/proof_pack_ci" \
+            --json | tee ".assay-verify/verify.json"
+          bash ".assay-verify/proof_pack_ci/_unsigned/agentmesh/replay-from-proof.sh" \
+            ".assay-verify/proof_pack_ci" \
+            | tee ".assay-verify/replay.json"
+
+      - name: Upload AgentMesh proof-pack artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentmesh-assay-proof-pack
+          path: .assay-verify/
+          if-no-files-found: warn
+
   weave-integrity:
     runs-on: ubuntu-latest
     steps:
