@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package agentmesh;
+
+// Replay contract only. Assay proof packs remain the canonical artifact format.
+message ExecutionRequest {
+  string request_id = 1;
+  string repo = 2;
+  string commit_sha = 3;
+  repeated string command = 4;
+  map<string, string> env = 5;
+  string assay_pack_format = 6;
+}
+
+message ExecutionResult {
+  string request_id = 1;
+  int32 exit_code = 2;
+  string output_manifest_sha256 = 3;
+  string proof_pack_root_sha256 = 4;
+}
